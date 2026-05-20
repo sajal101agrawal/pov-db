@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import asdict
+from datetime import date, timedelta
+from typing import Any
+
+from app.core.config import Settings
+from app.db.repository import MarketRepository
+from app.services.calculations import (
+    atm_iv,
+    black_scholes_greeks,
+    constant_maturity_iv,
+    compute_skew,
+    forward_factor,
+    forward_volatility,
+    implied_volatility_bisection,
+    iv_slope,
+    ratio,
+    realized_vol_close_to_close,
+    rsi,
+    smoothed_skew,
+    straddle_pnl,
+    volatility_risk_premium,
+    years_to_expiry,
+)
+from app.sources.bhavcopy import BhavcopySource
+from app.sources.rates import IndiaRiskFreeRateClient
+
+
+class Pipeline:
+    def __init__(
+        self,
+        settings: Settings,
+        repository: MarketRepository,
+        bhavcopy_source: BhavcopySource,
+        rates: IndiaRiskFreeRateClient,
+    ) -> None:
+        self.settings = settings
+        self.repository = repository
+        self.bhavcopy_source = bhavcopy_source
+        self.rates = rates
+
+    async def run_for_date(
+        self,
+        trade_date: date,
+        symbols: list[str] | None = None,
+        finalize: bool = True,
+    ) -> dict[str, Any]:
+        fo_rows, cm_rows = await asyncio.gather(
+            self.bhavcopy_source.fetch_fo(trade_date),
+            self.bhavcopy_source.fetch_cm(trade_date),
+        )
+        if symbols:
+            allowed = {s.upper() for s in symbols}
+            fo_rows = [row for row in fo_rows if row.symbol in allowed]
+            cm_rows = [row for row in cm_rows if row.symbol in allowed]
+
+        option_count = await self.repository.upsert_option_rows(fo_rows)
+        equity_count = await self.repository.upsert_equity_rows(cm_rows)
+        await self.repository.upsert_discovered_symbols(_discovered_symbols(fo_rows, cm_rows))
+
+        rates = await self.rates.fetch_91d_rate(trade_date - timedelta(days=10), trade_date + timedelta(days=1))
+        await self.repository.upsert_interest_rates(rates)
+        await self.repository.refresh_expiry_calendar(trade_date)
+
+        symbols_for_metrics = sorted({row.symbol for row in fo_rows})
+        if self.settings.pipeline_symbol_limit:
+            symbols_for_metrics = symbols_for_metrics[: self.settings.pipeline_symbol_limit]
+
+        for symbol in symbols_for_metrics:
+            await self.compute_symbol_day(symbol, trade_date)
+
+        if finalize:
+            await self.repository.refresh_percentiles(trade_date)
+            await self.repository.refresh_aggregates()
+        return {
+            "trade_date": trade_date.isoformat(),
+            "options_rows": option_count,
+            "equity_rows": equity_count,
+            "symbols": len(symbols_for_metrics),
+            "finalized": finalize,
+        }
+
+    async def compute_symbol_day(self, symbol: str, trade_date: date) -> None:
+        rate = await self.repository.risk_free_rate(trade_date, self.settings.default_risk_free_rate)
+        ohlc = await self.repository.equity_ohlc_window(symbol, trade_date, limit=100)
+        if not ohlc:
+            return
+        spot_row = ohlc[-1]
+        spot_close = spot_row.get("close")
+        spot_open = spot_row.get("open") or spot_close
+        if not spot_close:
+            return
+
+        chain = await self.repository.option_chain(symbol, trade_date)
+        if not chain:
+            return
+        atm_strike = min({float(r["strike_price"]) for r in chain}, key=lambda strike: abs(strike - spot_close))
+
+        derived = []
+        for row in chain:
+            option_type = row["option_type"]
+            t = years_to_expiry(trade_date, row["expiry_date"])
+            market_price = row.get("settle_price") or row.get("close")
+            iv = implied_volatility_bisection(
+                market_price or 0.0,
+                spot_close,
+                float(row["strike_price"]),
+                t,
+                rate,
+                option_type,
+            )
+            greeks = (
+                black_scholes_greeks(
+                    spot_close,
+                    float(row["strike_price"]),
+                    t,
+                    rate,
+                    iv,
+                    option_type,
+                )
+                if iv is not None
+                else None
+            )
+            item = dict(row)
+            item.update(
+                {
+                    "iv": iv,
+                    "delta": greeks.delta if greeks else None,
+                    "gamma": greeks.gamma if greeks else None,
+                    "theta": greeks.theta if greeks else None,
+                    "vega": greeks.vega if greeks else None,
+                    "rho": greeks.rho if greeks else None,
+                    "is_atm": float(row["strike_price"]) == atm_strike,
+                }
+            )
+            derived.append(item)
+        await self.repository.update_contract_derived(derived)
+
+        fresh_chain = await self.repository.option_chain(symbol, trade_date)
+        metrics = self._compute_metric(symbol, trade_date, spot_open, spot_close, ohlc, fresh_chain, atm_strike)
+        lagged_rv30 = await self.repository.lagged_rv30(symbol, trade_date, 20)
+        metrics["vrp"] = volatility_risk_premium(metrics.get("iv_30"), lagged_rv30)
+        await self.repository.upsert_daily_metric(metrics)
+        await self._compute_straddle(symbol, trade_date, spot_open, spot_close, metrics)
+
+    def _compute_metric(
+        self,
+        symbol: str,
+        trade_date: date,
+        spot_open: float,
+        spot_close: float,
+        ohlc: list[dict[str, Any]],
+        chain: list[dict[str, Any]],
+        atm_strike: float,
+    ) -> dict[str, Any]:
+        expiries = sorted({row["expiry_date"] for row in chain if row["expiry_date"] >= trade_date})
+        expiry_buckets = _monthly_expiry_buckets(expiries)
+        expiry_30 = expiry_buckets[0] if len(expiry_buckets) >= 1 else None
+        expiry_60 = expiry_buckets[1] if len(expiry_buckets) >= 2 else None
+        expiry_90 = expiry_buckets[2] if len(expiry_buckets) >= 3 else None
+
+        def atm_for_expiry(expiry):
+            if not expiry:
+                return None, None, None, None
+            rows = [r for r in chain if r["expiry_date"] == expiry]
+            if not rows:
+                return None, None, None, None
+            strike = min({float(r["strike_price"]) for r in rows}, key=lambda value: abs(value - spot_close))
+            ce = next((r for r in rows if float(r["strike_price"]) == strike and r["option_type"] == "CE"), None)
+            pe = next((r for r in rows if float(r["strike_price"]) == strike and r["option_type"] == "PE"), None)
+            return strike, ce, pe, atm_iv(ce.get("iv") if ce else None, pe.get("iv") if pe else None)
+
+        strike30, ce30, pe30, iv30 = atm_for_expiry(expiry_30)
+        _strike60, _ce60, _pe60, iv60 = atm_for_expiry(expiry_60)
+        _strike90, _ce90, _pe90, iv90 = atm_for_expiry(expiry_90)
+        iv30 = _constant_maturity_atm_iv(expiries, trade_date, atm_for_expiry, 30)
+        iv60 = _constant_maturity_atm_iv(expiries, trade_date, atm_for_expiry, 60)
+        iv90 = _constant_maturity_atm_iv(expiries, trade_date, atm_for_expiry, 90)
+
+        dte30 = (expiry_30 - trade_date).days if expiry_30 else None
+        dte60 = (expiry_60 - trade_date).days if expiry_60 else None
+        dte90 = (expiry_90 - trade_date).days if expiry_90 else None
+        opens = [row["open"] for row in ohlc if row.get("open")]
+        highs = [row["high"] for row in ohlc if row.get("high")]
+        lows = [row["low"] for row in ohlc if row.get("low")]
+        closes = [row["close"] for row in ohlc if row.get("close")]
+
+        rv10 = _close_to_close_rv_window(ohlc, trade_date, 10)
+        rv20 = _close_to_close_rv_window(ohlc, trade_date, 20)
+        rv30 = _close_to_close_rv_window(ohlc, trade_date, 30)
+        fwdv = forward_volatility(iv30, iv60, 30, 60)
+        skew_chain = [row for row in chain if row["expiry_date"] == expiry_30]
+        skew20 = compute_skew(skew_chain, 0.20)
+        skew25 = compute_skew(skew_chain, 0.25)
+        skew30 = compute_skew(skew_chain, 0.30)
+
+        return {
+            "symbol": symbol,
+            "trade_date": trade_date,
+            "iv_30": iv30,
+            "iv_60": iv60,
+            "iv_90": iv90,
+            "expiry_30d": expiry_30,
+            "expiry_60d": expiry_60,
+            "expiry_90d": expiry_90,
+            "dte_30": dte30,
+            "dte_60": dte60,
+            "dte_90": dte90,
+            "atm_strike": strike30 or atm_strike,
+            "nearest_ce_iv": ce30.get("iv") if ce30 else None,
+            "nearest_pe_iv": pe30.get("iv") if pe30 else None,
+            "nearest_ce_ltp": (ce30.get("settle_price") or ce30.get("close")) if ce30 else None,
+            "nearest_pe_ltp": (pe30.get("settle_price") or pe30.get("close")) if pe30 else None,
+            "rv_10": rv10,
+            "rv_20": rv20,
+            "rv_30": rv30,
+            "vrp": None,
+            "fwdv_3060": fwdv,
+            "fwdfct_3060": forward_factor(iv30, fwdv),
+            "fev_30": fwdv,
+            "iv_slope_3060": iv_slope(iv30, iv60, 30, 60),
+            "skew_20": skew20,
+            "skew_25": skew25,
+            "skew_30": skew30,
+            "smoothed_skew": smoothed_skew(skew20, skew25, skew30),
+            "iv30_rv30_ratio": ratio(iv30, rv30),
+            "iv30_fev30_ratio": ratio(iv30, fwdv),
+            "avg_option_volume": _average([r.get("num_contracts") for r in chain]),
+            "daily_rsi": rsi(closes, 14),
+            "weekly_rsi": rsi(_weekly_closes(ohlc), 14),
+        }
+
+    async def _compute_straddle(
+        self,
+        symbol: str,
+        trade_date: date,
+        spot_open: float,
+        spot_close: float,
+        metrics: dict[str, Any],
+    ) -> None:
+        expiry = metrics.get("expiry_30d")
+        if not expiry:
+            await self.repository.upsert_straddle_pnl({"symbol": symbol, "trade_date": trade_date, "skip_reason": "NO_EXPIRY"})
+            return
+        chain = await self.repository.option_chain(symbol, trade_date, expiry)
+        if not chain:
+            await self.repository.upsert_straddle_pnl({"symbol": symbol, "trade_date": trade_date, "skip_reason": "NO_DATA"})
+            return
+        strike = min({float(r["strike_price"]) for r in chain}, key=lambda value: abs(value - spot_open))
+        ce = next((r for r in chain if float(r["strike_price"]) == strike and r["option_type"] == "CE"), None)
+        pe = next((r for r in chain if float(r["strike_price"]) == strike and r["option_type"] == "PE"), None)
+        if not ce or not pe or ce.get("open") is None or pe.get("open") is None or ce.get("close") is None or pe.get("close") is None:
+            await self.repository.upsert_straddle_pnl({"symbol": symbol, "trade_date": trade_date, "skip_reason": "MISSING_LEGS"})
+            return
+        pnl = straddle_pnl(ce["open"], pe["open"], ce["close"], pe["close"])
+        has_result_event = await self.repository.has_event(symbol, trade_date, "RESULT")
+        await self.repository.upsert_straddle_pnl(
+            {
+                "symbol": symbol,
+                "trade_date": trade_date,
+                "expiry_date": expiry,
+                "atm_strike": strike,
+                "underlying_open": spot_open,
+                "underlying_close": spot_close,
+                "underlying_move_pct": ((spot_close - spot_open) / spot_open * 100.0) if spot_open else None,
+                "call_entry": ce["open"],
+                "put_entry": pe["open"],
+                "total_entry": ce["open"] + pe["open"],
+                "call_exit": ce["close"],
+                "put_exit": pe["close"],
+                "total_exit": ce["close"] + pe["close"],
+                "pnl": pnl,
+                "is_winner": pnl > 0,
+                "has_result_event": has_result_event,
+                "iv_on_entry": metrics.get("iv_30"),
+                "skip_reason": None,
+            }
+        )
+
+
+def _monthly_expiry_buckets(expiries: list[date]) -> list[date]:
+    """Return the first three monthly expiry buckets.
+
+    NSE index options can have weekly expiries. The prior processing project
+    used the latest expiry in each calendar month as the monthly contract.
+    Stock options usually only have monthly expiries, so this is simply the
+    sorted first/second/third available expiries for those symbols.
+    """
+    monthly: dict[tuple[int, int], date] = {}
+    for expiry in sorted(expiries):
+        monthly[(expiry.year, expiry.month)] = expiry
+    selected = sorted(monthly.values())
+    return selected[:3] if len(selected) >= 3 else sorted(expiries)[:3]
+
+
+def _constant_maturity_atm_iv(expiries, trade_date: date, atm_for_expiry, target_dte: int) -> float | None:
+    candidates = []
+    for expiry in expiries:
+        dte = (expiry - trade_date).days
+        _strike, _ce, _pe, iv = atm_for_expiry(expiry)
+        if iv is not None and iv > 0:
+            candidates.append((expiry, dte, iv))
+    if not candidates:
+        return None
+    exact = next((iv for _expiry, dte, iv in candidates if dte == target_dte), None)
+    if exact is not None:
+        return exact
+    below = [item for item in candidates if item[1] < target_dte]
+    above = [item for item in candidates if item[1] > target_dte]
+    if below and above:
+        near = max(below, key=lambda item: item[1])
+        far = min(above, key=lambda item: item[1])
+        return constant_maturity_iv(near[2], near[1], far[2], far[1], target_dte)
+    return min(candidates, key=lambda item: abs(item[1] - target_dte))[2]
+
+
+def _close_to_close_rv_window(ohlc: list[dict[str, Any]], trade_date: date, window: int) -> float | None:
+    rows = [row for row in ohlc if row.get("close") and row.get("trade_date")]
+    if len(rows) < window + 1:
+        return None
+    selected = rows[-(window + 1) :]
+    oldest_date = selected[0]["trade_date"]
+    # Avoid computing fake RV from sparse bootstrap samples separated by months.
+    if (trade_date - oldest_date).days > int(window * 2.5) + 10:
+        return None
+    return realized_vol_close_to_close([row["close"] for row in selected], window)
+
+
+def _weekly_closes(ohlc: list[dict[str, Any]]) -> list[float]:
+    weekly: dict[tuple[int, int], float] = {}
+    for row in ohlc:
+        key = row["trade_date"].isocalendar()[:2]
+        if row.get("close") is not None:
+            weekly[key] = row["close"]
+    return list(weekly.values())
+
+
+def _average(values) -> float | None:
+    clean = [float(v) for v in values if v is not None]
+    return sum(clean) / len(clean) if clean else None
+
+
+def _discovered_symbols(fo_rows, cm_rows) -> list[dict[str, Any]]:
+    symbols: dict[str, str] = {}
+    for row in cm_rows:
+        symbols.setdefault(row.symbol, "individual_securities")
+    for row in fo_rows:
+        symbol_type = "index" if row.instrument_type == "OPTIDX" else "individual_securities"
+        symbols[row.symbol] = symbol_type
+    return [{"symbol": symbol, "symbol_type": symbol_type} for symbol, symbol_type in sorted(symbols.items())]

@@ -1,0 +1,203 @@
+# Database Dictionary
+
+Last validated locally: 2026-05-20.
+
+## Unit Policy
+
+| Field family | Stored unit | Notes |
+|---|---|---|
+| IV/RV/VRP/skew/forward vol | Decimal annualized vol | `0.265` means `26.5%` |
+| Risk-free rate | Decimal annualized rate | NSE-IV convention is `0.10` |
+| RSI | `0..100` scale | Not decimal |
+| Percentiles/ranks | Percentile `0..100`, rank integer | Not decimal |
+| Win rates | Percent points `0..100` | Not decimal |
+| `underlying_move_pct` | Percent points | `-1.19` means `-1.19%` |
+| PnL and prices | Rupees/index points | Same units as bhavcopy |
+
+## Tables
+
+### `options_historical`
+
+Purpose: raw NSE F&O option-chain rows plus contract-level IV and Greeks.
+
+Primary key: `(symbol, trade_date, expiry_date, strike_price, option_type)`.
+
+Important columns:
+
+- `instrument_type`: `OPTSTK` or `OPTIDX`.
+- `open/high/low/close/settle_price`: raw bhavcopy option prices.
+- `num_contracts`, `contract_value`, `open_interest`, `change_in_oi`: raw liquidity/OI fields.
+- `iv`: BSM implied volatility, decimal.
+- `delta/gamma/theta/vega/rho`: BSM Greeks. Stored `NULL` when IV cannot be solved.
+- `days_to_expiry`: actual `expiry_date - trade_date`.
+- `is_atm`: true for rows whose strike is nearest same-day spot close.
+
+Expected nulls:
+
+- `iv` and Greeks can be null for no-trade or no-solution contracts.
+- `is_atm` can be null for rows that have not been through the derived-metrics pass.
+
+Validation rules:
+
+- Prices cannot be negative.
+- OHLC containment is enforced only for traded contracts (`num_contracts > 0`) because NSE bhavcopy can carry zero-volume rows with `open/high/low = 0` and nonzero close/settle.
+- `days_to_expiry` must equal `GREATEST(expiry_date - trade_date, 0)`.
+- CE delta must be `0..1`; PE delta must be `-1..0`.
+
+### `equity_historical`
+
+Purpose: raw NSE cash-market OHLCV for underlying symbols.
+
+Primary key: `(symbol, trade_date)`.
+
+Used for:
+
+- Spot input to IV and Greeks.
+- RV and RSI.
+- Straddle entry/exit spot context.
+
+Expected nulls:
+
+- `delivery_volume` is null because the current new-format NSE CM bhavcopy path does not provide it consistently.
+
+Validation rules:
+
+- OHLC values must be positive and internally consistent.
+- Volume/turnover cannot be negative.
+
+### `interest_rates`
+
+Purpose: risk-free-rate input for IV calculations.
+
+Current convention:
+
+- Tenor: `91d`
+- Source: `fixed:nse_iv_10pct`
+- Rate: `0.10`
+
+Reason: NSE option-chain notes state that a 10% interest rate is applied while computing IV. This table should not use Yahoo `^IRX`, because that is the US 13-week T-bill.
+
+### `symbol_daily_metrics`
+
+Purpose: one dashboard-ready row per symbol per trade date.
+
+Important columns:
+
+- `iv_30/iv_60/iv_90`: synthetic constant-maturity IVs, decimal annualized.
+- `expiry_30d/expiry_60d/expiry_90d`: actual exchange expiries selected for snapshots/strategy.
+- `dte_30/dte_60/dte_90`: actual calendar days from `trade_date` to the selected expiry.
+- `rv_10/rv_20/rv_30`: close-to-close realized vol, decimal annualized.
+- `vrp`: `iv_30(today) - rv_30(20 trading days earlier)`.
+- `fwdv_3060`: synthetic forward volatility between target 30D and 60D maturities.
+- `fwdfct_3060`: `fwdv_3060 / iv_30`.
+- `iv_slope_3060`: `(iv_60 - iv_30) / 30`.
+- `skew_20/25/30`: put IV minus call IV at the closest target deltas.
+- `daily_rsi/weekly_rsi`: RSI on `0..100`.
+- Percentile fields: `0..100`.
+
+Expected nulls:
+
+- RV fields are null until enough historical closes exist.
+- VRP is null until lagged RV30 exists.
+- Weekly RSI is null until enough weekly closes exist.
+- Percentiles are null for rows that predate the final percentile refresh.
+- `nearest_ce_iv` can be null if the selected ATM call leg has no valid IV.
+
+Validation rules:
+
+- Volatility fields must be in a practical `0..5` decimal range.
+- RSI and percentiles must be `0..100`.
+- DTE fields must match selected expiry minus trade date.
+
+### `straddle_pnl`
+
+Purpose: daily short ATM straddle backtest.
+
+Method:
+
+- Entry spot: underlying open.
+- Expiry: `symbol_daily_metrics.expiry_30d`.
+- Strike: nearest strike to underlying open.
+- Entry: CE open + PE open.
+- Exit: CE close + PE close.
+- PnL: entry total - exit total.
+
+Expected nulls:
+
+- `skip_reason` is null for valid rows.
+- If data is missing, `skip_reason` is populated and leg fields may be null.
+
+Validation rules:
+
+- `total_entry = call_entry + put_entry`.
+- `total_exit = call_exit + put_exit`.
+- `pnl = total_entry - total_exit`.
+- `underlying_move_pct = (close - open) / open * 100`.
+
+### `symbol_aggregates`
+
+Purpose: one row per symbol derived from `straddle_pnl` and `symbol_daily_metrics`.
+
+Expected nulls:
+
+- Result-event analytics are null for symbols with no result-event overlap in loaded history.
+
+### `symbol_universe`
+
+Purpose: active NSE F&O symbol registry.
+
+Current refresh:
+
+- Source: latest NSE F&O bhavcopy.
+- Active universe on 2026-05-19: 214 symbols, including 209 stock underlyings and 5 index underlyings.
+
+Expected nulls:
+
+- Company metadata, sector, ISIN, lot size, and tick size are not available from the bhavcopy-only refresh and remain null until a separate master-data source is added.
+
+### `trading_calendar`
+
+Purpose: local trading/non-trading date lookup.
+
+Current population:
+
+- Dates with local equity bhavcopy rows are marked trading days.
+- Weekends are non-trading.
+- Weekdays with no local bhavcopy are marked `no_local_bhavcopy`.
+
+### `events`
+
+Purpose: corporate event calendar, mainly result dates.
+
+Current source:
+
+- NSE event-calendar API.
+- Result events are stored as `event_type = 'RESULT'`.
+
+### `error_log`
+
+Purpose: durable operational error capture for pipeline/API/source failures.
+
+Current usage:
+
+- Bootstrap source failures are logged.
+- Manual pipeline API failures are logged.
+- Global API exception handler logs uncaught errors.
+
+Future email alerts should hook into this table or the global exception handler without changing individual endpoints.
+
+### `live_snapshot`
+
+Purpose: optional PostgreSQL fallback/audit table for live data.
+
+Current status:
+
+- Empty until live ingestion is implemented.
+
+### `pipeline_state`
+
+Purpose: future job-state/checkpoint table.
+
+Current status:
+
+- Empty in local bootstrap.

@@ -1,0 +1,32 @@
+[project]
+name = "pov-db"
+version = "0.1.0"
+description = "Power of Volatility database and analytics service"
+requires-python = ">=3.11"
+dependencies = [
+    "apscheduler>=3.10.4",
+    "asyncpg>=0.30.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "pydantic-settings>=2.4.0",
+    "python-dateutil>=2.9.0",
+    "redis>=5.0.0",
+    "uvicorn[standard]>=0.30.0",
+    "yfinance>=0.2.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
