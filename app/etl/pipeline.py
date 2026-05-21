@@ -8,6 +8,7 @@ from typing import Any
 from app.core.config import Settings
 from app.db.repository import MarketRepository
 from app.services.calculations import (
+    MAX_ANALYTICS_IV,
     atm_iv,
     black_scholes_greeks,
     constant_maturity_iv,
@@ -17,12 +18,12 @@ from app.services.calculations import (
     implied_volatility_bisection,
     iv_slope,
     ratio,
-    realized_vol_close_to_close,
     rsi,
     smoothed_skew,
     straddle_pnl,
     volatility_risk_premium,
     years_to_expiry,
+    yang_zhang_realized_vol,
 )
 from app.sources.bhavcopy import BhavcopySource
 from app.sources.rates import IndiaRiskFreeRateClient
@@ -68,8 +69,18 @@ class Pipeline:
         if self.settings.pipeline_symbol_limit:
             symbols_for_metrics = symbols_for_metrics[: self.settings.pipeline_symbol_limit]
 
-        for symbol in symbols_for_metrics:
-            await self.compute_symbol_day(symbol, trade_date)
+        concurrency = max(1, int(self.settings.pipeline_compute_concurrency))
+        if concurrency == 1:
+            for symbol in symbols_for_metrics:
+                await self.compute_symbol_day(symbol, trade_date)
+        else:
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def compute_with_limit(symbol: str) -> None:
+                async with semaphore:
+                    await self.compute_symbol_day(symbol, trade_date)
+
+            await asyncio.gather(*(compute_with_limit(symbol) for symbol in symbols_for_metrics))
 
         if finalize:
             await self.repository.refresh_percentiles(trade_date)
@@ -140,8 +151,8 @@ class Pipeline:
 
         fresh_chain = await self.repository.option_chain(symbol, trade_date)
         metrics = self._compute_metric(symbol, trade_date, spot_open, spot_close, ohlc, fresh_chain, atm_strike)
-        lagged_rv30 = await self.repository.lagged_rv30(symbol, trade_date, 20)
-        metrics["vrp"] = volatility_risk_premium(metrics.get("iv_30"), lagged_rv30)
+        lagged_iv30 = await self.repository.lagged_iv30(symbol, trade_date, 20)
+        metrics["vrp"] = volatility_risk_premium(lagged_iv30, metrics.get("rv_30"))
         await self.repository.upsert_daily_metric(metrics)
         await self._compute_straddle(symbol, trade_date, spot_open, spot_close, metrics)
 
@@ -187,11 +198,14 @@ class Pipeline:
         lows = [row["low"] for row in ohlc if row.get("low")]
         closes = [row["close"] for row in ohlc if row.get("close")]
 
-        rv10 = _close_to_close_rv_window(ohlc, trade_date, 10)
-        rv20 = _close_to_close_rv_window(ohlc, trade_date, 20)
-        rv30 = _close_to_close_rv_window(ohlc, trade_date, 30)
+        rv10 = _yang_zhang_rv_window(ohlc, trade_date, 10)
+        rv20 = _yang_zhang_rv_window(ohlc, trade_date, 20)
+        rv30 = _yang_zhang_rv_window(ohlc, trade_date, 30)
+        rv60 = _yang_zhang_rv_window(ohlc, trade_date, 60)
+        rv90 = _yang_zhang_rv_window(ohlc, trade_date, 90)
         fwdv = forward_volatility(iv30, iv60, 30, 60)
-        skew_chain = [row for row in chain if row["expiry_date"] == expiry_30]
+        skew_expiry = _expiry_closest_to_target(expiries, trade_date, 30)
+        skew_chain = [row for row in chain if row["expiry_date"] == skew_expiry]
         skew20 = compute_skew(skew_chain, 0.20)
         skew25 = compute_skew(skew_chain, 0.25)
         skew30 = compute_skew(skew_chain, 0.30)
@@ -209,13 +223,15 @@ class Pipeline:
             "dte_60": dte60,
             "dte_90": dte90,
             "atm_strike": strike30 or atm_strike,
-            "nearest_ce_iv": ce30.get("iv") if ce30 else None,
-            "nearest_pe_iv": pe30.get("iv") if pe30 else None,
+            "nearest_ce_iv": _analytics_iv(ce30.get("iv") if ce30 else None),
+            "nearest_pe_iv": _analytics_iv(pe30.get("iv") if pe30 else None),
             "nearest_ce_ltp": (ce30.get("settle_price") or ce30.get("close")) if ce30 else None,
             "nearest_pe_ltp": (pe30.get("settle_price") or pe30.get("close")) if pe30 else None,
             "rv_10": rv10,
             "rv_20": rv20,
             "rv_30": rv30,
+            "rv_60": rv60,
+            "rv_90": rv90,
             "vrp": None,
             "fwdv_3060": fwdv,
             "fwdfct_3060": forward_factor(iv30, fwdv),
@@ -240,7 +256,20 @@ class Pipeline:
         spot_close: float,
         metrics: dict[str, Any],
     ) -> None:
-        expiry = metrics.get("expiry_30d")
+        expiries = [
+            row["expiry_date"]
+            for row in await self.repository.pool.fetch(
+                """
+                SELECT DISTINCT expiry_date
+                FROM options_historical
+                WHERE symbol = $1 AND trade_date = $2 AND expiry_date >= $2
+                ORDER BY expiry_date
+                """,
+                symbol,
+                trade_date,
+            )
+        ]
+        expiry = _expiry_closest_to_target(expiries, trade_date, 30)
         if not expiry:
             await self.repository.upsert_straddle_pnl({"symbol": symbol, "trade_date": trade_date, "skip_reason": "NO_EXPIRY"})
             return
@@ -316,8 +345,23 @@ def _constant_maturity_atm_iv(expiries, trade_date: date, atm_for_expiry, target
     return min(candidates, key=lambda item: abs(item[1] - target_dte))[2]
 
 
-def _close_to_close_rv_window(ohlc: list[dict[str, Any]], trade_date: date, window: int) -> float | None:
-    rows = [row for row in ohlc if row.get("close") and row.get("trade_date")]
+def _expiry_closest_to_target(expiries: list[date], trade_date: date, target_dte: int) -> date | None:
+    candidates = [expiry for expiry in expiries if expiry >= trade_date]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda expiry: abs((expiry - trade_date).days - target_dte))
+
+
+def _yang_zhang_rv_window(ohlc: list[dict[str, Any]], trade_date: date, window: int) -> float | None:
+    rows = [
+        row
+        for row in ohlc
+        if row.get("open")
+        and row.get("high")
+        and row.get("low")
+        and row.get("close")
+        and row.get("trade_date")
+    ]
     if len(rows) < window + 1:
         return None
     selected = rows[-(window + 1) :]
@@ -325,7 +369,12 @@ def _close_to_close_rv_window(ohlc: list[dict[str, Any]], trade_date: date, wind
     # Avoid computing fake RV from sparse bootstrap samples separated by months.
     if (trade_date - oldest_date).days > int(window * 2.5) + 10:
         return None
-    return realized_vol_close_to_close([row["close"] for row in selected], window)
+    return yang_zhang_realized_vol(
+        [row["open"] for row in selected],
+        [row["high"] for row in selected],
+        [row["low"] for row in selected],
+        [row["close"] for row in selected],
+    )
 
 
 def _weekly_closes(ohlc: list[dict[str, Any]]) -> list[float]:
@@ -340,6 +389,10 @@ def _weekly_closes(ohlc: list[dict[str, Any]]) -> list[float]:
 def _average(values) -> float | None:
     clean = [float(v) for v in values if v is not None]
     return sum(clean) / len(clean) if clean else None
+
+
+def _analytics_iv(value: float | None) -> float | None:
+    return value if value is not None and 0 < float(value) <= MAX_ANALYTICS_IV else None
 
 
 def _discovered_symbols(fo_rows, cm_rows) -> list[dict[str, Any]]:

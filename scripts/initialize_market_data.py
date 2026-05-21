@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 import sys
 
@@ -102,7 +102,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Initialize all market-data tables for a fresh server.")
     parser.add_argument("--start", help="Start date YYYY-MM-DD. Defaults to --years back.")
     parser.add_argument("--end", default=date.today().isoformat())
-    parser.add_argument("--years", type=float, default=4.0)
+    parser.add_argument("--years", type=float, default=5.0)
     parser.add_argument("--symbols", help="Optional comma-separated symbols. Omit for all F&O symbols.")
     parser.add_argument("--force", action="store_true", help="Reload dates even when option data already exists.")
     parser.add_argument("--min-existing-options", type=int, default=10_000)
@@ -128,7 +128,7 @@ async def main() -> None:
     )
 
     def emit(record: dict) -> None:
-        payload = {"ts": datetime.utcnow().isoformat(), **record}
+        payload = {"ts": datetime.now(UTC).isoformat(), **record}
         print(json.dumps(payload, default=str), flush=True)
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, default=str) + "\n")

@@ -161,6 +161,8 @@ CREATE TABLE IF NOT EXISTS symbol_daily_metrics (
     rv_10 NUMERIC(18,8),
     rv_20 NUMERIC(18,8),
     rv_30 NUMERIC(18,8),
+    rv_60 NUMERIC(18,8),
+    rv_90 NUMERIC(18,8),
     vrp NUMERIC(18,8),
     fwdv_3060 NUMERIC(18,8),
     fwdfct_3060 NUMERIC(18,8),
@@ -189,6 +191,8 @@ CREATE TABLE IF NOT EXISTS symbol_daily_metrics (
 SELECT create_hypertable('symbol_daily_metrics', 'trade_date', chunk_time_interval => INTERVAL '1 year', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_sdm_latest ON symbol_daily_metrics (symbol, trade_date DESC) INCLUDE (iv_30, iv_60, iv_90, vrp, skew_25, rv_30);
 CREATE INDEX IF NOT EXISTS idx_sdm_date_symbol ON symbol_daily_metrics (trade_date, symbol);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_60 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_90 NUMERIC(18,8);
 
 CREATE TABLE IF NOT EXISTS straddle_pnl (
     symbol VARCHAR(20) NOT NULL,
@@ -232,8 +236,16 @@ CREATE TABLE IF NOT EXISTS symbol_aggregates (
     implied_result_move NUMERIC(10,6),
     avg_result_move NUMERIC(10,6),
     max_result_move NUMERIC(10,6),
+    avg_earnings_pnl NUMERIC(12,4),
+    earnings_win_rate NUMERIC(6,2),
+    max_earnings_profit NUMERIC(12,4),
+    max_earnings_loss NUMERIC(12,4),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS avg_earnings_pnl NUMERIC(12,4);
+ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS earnings_win_rate NUMERIC(6,2);
+ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS max_earnings_profit NUMERIC(12,4);
+ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS max_earnings_loss NUMERIC(12,4);
 
 CREATE TABLE IF NOT EXISTS live_snapshot (
     symbol VARCHAR(20) NOT NULL,

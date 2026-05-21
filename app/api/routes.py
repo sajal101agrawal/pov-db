@@ -11,6 +11,7 @@ from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
 from app.services.cache import CacheService
 from app.services.factory import build_bhavcopy_source
+from app.services.live import fetch_and_store_live_quotes, fetch_and_store_live_snapshots
 from app.sources.rates import IndiaRiskFreeRateClient
 
 
@@ -76,6 +77,76 @@ async def live(symbol: str, cache_service: CacheService = Depends(cache)) -> dic
     if not payload:
         raise HTTPException(status_code=404, detail="live data not available")
     return payload
+
+
+@router.get("/live")
+async def live_symbols(cache_service: CacheService = Depends(cache)) -> list[dict]:
+    return await cache_service.get_live_symbols()
+
+
+@router.get("/live/{symbol}/option-chain")
+async def live_option_chain(
+    symbol: str,
+    settings: Settings = Depends(get_settings),
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> dict:
+    cached = await cache_service.get_live(f"chain:{symbol}")
+    if cached:
+        return cached
+    redis = Redis.from_url(settings.redis_url)
+    try:
+        result = await fetch_and_store_live_snapshots(settings, repo, redis, [symbol.upper()])
+        payload = await CacheService(redis).get_live(f"chain:{symbol}")
+        if payload:
+            return payload
+        raise HTTPException(status_code=404, detail=result)
+    finally:
+        await redis.aclose()
+
+
+@router.post("/admin/live-quotes")
+async def trigger_live_quotes(
+    symbols: str | None = None,
+    settings: Settings = Depends(get_settings),
+    repo: MarketRepository = Depends(repository),
+) -> dict:
+    redis = Redis.from_url(settings.redis_url)
+    try:
+        symbol_list = [item.strip().upper() for item in symbols.split(",")] if symbols else None
+        return await fetch_and_store_live_quotes(settings, repo, redis, symbol_list)
+    except Exception as exc:
+        await repo.log_error(
+            "api_live_quotes",
+            type(exc).__name__,
+            {"message": str(exc), "repr": repr(exc), "symbols": symbols},
+            source="dhan",
+        )
+        raise
+    finally:
+        await redis.aclose()
+
+
+@router.post("/admin/live-snapshot")
+async def trigger_live_snapshot(
+    symbols: str | None = None,
+    settings: Settings = Depends(get_settings),
+    repo: MarketRepository = Depends(repository),
+) -> dict:
+    redis = Redis.from_url(settings.redis_url)
+    try:
+        symbol_list = [item.strip().upper() for item in symbols.split(",")] if symbols else None
+        return await fetch_and_store_live_snapshots(settings, repo, redis, symbol_list)
+    except Exception as exc:
+        await repo.log_error(
+            "api_live_snapshot",
+            type(exc).__name__,
+            {"message": str(exc), "repr": repr(exc), "symbols": symbols},
+            source="dhan",
+        )
+        raise
+    finally:
+        await redis.aclose()
 
 
 @router.post("/admin/trigger-pipeline")

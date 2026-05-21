@@ -1,6 +1,6 @@
 # Formula Audit
 
-Last audited: 2026-05-20.
+Last audited: 2026-05-21.
 
 ## Unit Convention
 
@@ -10,7 +10,7 @@ Volatility and interest-rate values are stored as decimals.
 |---|---|
 | `0.2650` | `26.50%` annualized volatility |
 | `0.10` | `10%` annualized interest rate |
-| `-0.032` VRP | IV is 3.2 vol points below lagged RV |
+| `-0.032` VRP | Lagged IV is 3.2 vol points below current RV |
 | `63.43` win rate | `63.43%` because win-rate fields are percentage-point fields |
 
 Use this rule consistently:
@@ -89,35 +89,54 @@ Important DTE convention:
 
 ## Realized Volatility
 
-RV is annualized close-to-close realized volatility:
+RV is annualized Yang-Zhang realized volatility:
 
 ```text
-log_return_t = ln(close_t / close_{t-1})
-rv_N = sample_std(last N log returns) * sqrt(252)
+overnight_return_t = ln(open_t / close_{t-1})
+open_to_close_return_t = ln(close_t / open_t)
+
+RS_t =
+  ln(high_t / close_t) * ln(high_t / open_t)
+  + ln(low_t / close_t) * ln(low_t / open_t)
+
+k = 0.34 / (1.34 + ((n + 1) / (n - 1)))
+
+YZ_variance =
+  variance(overnight_return)
+  + k * variance(open_to_close_return)
+  + (1 - k) * average(RS)
+
+rv_N = sqrt(YZ_variance * 252)
 ```
 
-The pipeline computes `rv_10`, `rv_20`, and `rv_30`.
+RV is stored as decimal annualized volatility. `0.142` means `14.2%`; it is not multiplied by
+`100` before storage.
+
+The pipeline computes `rv_10`, `rv_20`, `rv_30`, `rv_60`, and `rv_90`.
 
 Null policy:
 
 - `rv_10` needs 11 closes.
 - `rv_20` needs 21 closes.
 - `rv_30` needs 31 closes.
+- `rv_60` needs 61 OHLC bars.
+- `rv_90` needs 91 OHLC bars.
 - The bootstrap refuses sparse windows that jump across long date gaps.
 
 ## VRP
 
-VRP follows the architecture lag convention:
+VRP follows the 20-trading-day shifted-IV convention:
 
 ```text
-vrp(today) = iv_30(today) - rv_30(20 trading days before today)
+vrp(today) = iv_30(20 trading days before today) - rv_30(today)
 ```
 
-This avoids comparing today’s forward-looking IV with overlapping realized-vol windows.
+This compares the earlier forward-looking implied volatility against subsequently realized
+volatility. Both values are decimal annualized volatilities, so no `* 100` conversion is applied.
 
 Null policy:
 
-- `vrp` is `NULL` until there is a valid lagged `rv_30`.
+- `vrp` is `NULL` until there is both valid current `rv_30` and valid lagged `iv_30`.
 
 ## Forward Volatility and Ratios
 
@@ -161,6 +180,13 @@ skew_D = IV(put closest to abs(delta)=D) - IV(call closest to delta=D)
 
 Computed for `D = 0.20`, `0.25`, and `0.30`.
 
+Skew is calculated from the expiry chain closest to a 30-calendar-day horizon. This is intentional:
+`expiry_30d` remains first monthly expiry metadata, but near-expiry chains can make delta skew unstable
+when only a few calendar days remain.
+
+IV legs above `2.0` (`200%`) and absolute skew above `0.75` (`75` vol points) are treated as
+unsafe analytics inputs and stored as `NULL` in daily metrics rather than as extreme values.
+
 `smoothed_skew` is the average of valid `skew_20`, `skew_25`, and `skew_30`.
 
 ## RSI
@@ -175,12 +201,23 @@ RSI = 100 - (100 / (1 + RS))
 - Daily RSI needs 15 daily closes.
 - Weekly RSI uses last close per ISO week and needs 15 weekly closes.
 
+## Percentiles and Averages
+
+Null observations are excluded from percentile, average, ratio, and win-rate denominators.
+
+- A percentile is stored as `NULL` when the current metric value is `NULL`.
+- For a non-null current value, the trailing history uses only non-null observations for that
+  metric on that symbol.
+- Aggregate PnL averages use only valid `straddle_pnl` rows where `skip_reason IS NULL`.
+- Result-event averages are `NULL` when no loaded result-event rows overlap the symbol history.
+- Ratios return `NULL` when the denominator is `NULL`, zero, or negative.
+
 ## Straddle Backtest
 
 The strategy is the initial short ATM straddle strategy from the BE spec:
 
 1. For each symbol and trade date, use `equity_historical.open` as entry spot.
-2. Use the selected 30-day horizon exchange expiry (`expiry_30d`).
+2. Use the available option expiry closest to a 30-calendar-day DTE.
 3. Pick the strike nearest to entry spot.
 4. Entry = ATM CE open + ATM PE open.
 5. Exit = same ATM CE close + same ATM PE close.
@@ -188,4 +225,12 @@ The strategy is the initial short ATM straddle strategy from the BE spec:
 7. `is_winner = pnl > 0`.
 8. `has_result_event` is true when `events` has a same-day `RESULT`.
 
-This aligns with the strategy document’s “short straddle entry at morning open, exit at EOD close” method.
+Historical NSE bhavcopy is one EOD file per trading day. It contains daily OHLC, not intraday
+timestamps. Therefore the historical backtest approximates:
+
+- morning entry with the option contract `OPEN`
+- EOD exit with the same option contract `CLOSE`
+
+This aligns with the strategy document’s “short straddle entry at morning open, exit at EOD close”
+method at daily-bhavcopy granularity. True timed intraday entry/exit needs a separate intraday
+or live option-chain feed.

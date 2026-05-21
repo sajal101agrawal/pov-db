@@ -15,10 +15,22 @@ docker compose up --build
 
 API docs are available at `http://localhost:8001/docs`.
 
-Initialize a fresh server with the last four years of NSE F&O history:
+Set up a server:
 
 ```bash
-python scripts/initialize_market_data.py --years 4
+scripts/setup_server.sh
+```
+
+Run the full idempotent deploy flow:
+
+```bash
+scripts/deploy_server.sh
+```
+
+Initialize a fresh local server with the last five years of NSE F&O history:
+
+```bash
+scripts/bootstrap_history.sh
 ```
 
 Run one daily EOD update after the NSE bhavcopy is published:
@@ -26,6 +38,22 @@ Run one daily EOD update after the NSE bhavcopy is published:
 ```bash
 python scripts/daily_update.py --date YYYY-MM-DD
 ```
+
+Install the daily ETL cron:
+
+```bash
+scripts/install_daily_etl_cron.sh
+```
+
+Export a validated local DB for RDS restore:
+
+```bash
+scripts/export_postgres_dump.sh
+```
+
+For live data, add `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` to `.env`. The worker polls
+basic Dhan quotes for all active F&O symbols during the IST market window. Full option chains
+are fetched and cached on demand through `GET /api/live/{symbol}/option-chain`.
 
 Run tests locally:
 
@@ -50,3 +78,4 @@ The formula audit is in [docs/calculations/formula-audit.md](docs/calculations/f
 - [Retries, failures, and validation](docs/operations/retries-errors-validation.md)
 - [Current validation report](docs/operations/current-validation-2026-05-20.md)
 - [Live option-chain architecture](docs/architecture/live-option-chain.md)
+- [AWS deployment notes](docs/operations/aws-deployment.md)

@@ -14,6 +14,7 @@ from app.db.pool import close_pool, get_pool
 from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
 from app.services.factory import build_bhavcopy_source
+from app.sources.nse import NSEArchiveClient
 from app.sources.nse_events import NSECorporateEventsClient
 from app.sources.nse_metadata import NSEMetadataClient
 from app.sources.rates import IndiaRiskFreeRateClient
@@ -40,7 +41,23 @@ async def main() -> None:
         result = await pipeline.run_for_date(trade_date, symbols, finalize=True)
         await repo.upsert_trading_calendar([{"trade_date": trade_date, "is_trading_day": True, "source": "daily_update"}])
 
-        active_symbols = await repo.active_symbols()
+        fo_rows = await NSEArchiveClient(
+            settings.nse_request_delay_seconds,
+            settings.source_retry_attempts,
+            settings.source_retry_base_delay_seconds,
+            settings.source_retry_max_delay_seconds,
+        ).fetch_fo(trade_date)
+        active_universe = {}
+        for row in fo_rows:
+            active_universe[row.symbol] = "index" if row.instrument_type == "OPTIDX" else "individual_securities"
+        await repo.pool.execute("UPDATE symbol_universe SET is_active = FALSE, updated_at = NOW()")
+        await repo.upsert_discovered_symbols(
+            [
+                {"symbol": symbol, "symbol_type": symbol_type}
+                for symbol, symbol_type in sorted(active_universe.items())
+            ]
+        )
+        active_symbols = sorted(active_universe)
         metadata = await NSEMetadataClient(
             settings.nse_request_delay_seconds,
             settings.source_retry_attempts,
@@ -61,6 +78,7 @@ async def main() -> None:
                 {
                     "event": "daily_update_done",
                     **result,
+                    "active_symbols": len(active_symbols),
                     "metadata_upserted": metadata_count,
                     "events_upserted": events_count,
                 },

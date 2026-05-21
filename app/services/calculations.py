@@ -11,6 +11,8 @@ import numpy as np
 
 TRADING_DAYS_PER_YEAR = 252
 CALENDAR_DAYS_PER_YEAR = 365
+MAX_ANALYTICS_IV = 2.0
+MAX_ABS_ANALYTICS_SKEW = 0.75
 
 
 def _norm_cdf(x: float) -> float:
@@ -79,7 +81,7 @@ def implied_volatility_bisection(
         spot, strike, time_to_expiry, risk_free_rate, hi, option_type, dividend_yield
     )
     if price_hi < market_price:
-        return hi
+        return None
 
     for _ in range(max_iterations):
         mid = (lo + hi) / 2.0
@@ -148,7 +150,11 @@ def black_scholes_greeks(
 
 
 def atm_iv(call_iv: float | None, put_iv: float | None) -> float | None:
-    values = [v for v in (call_iv, put_iv) if v is not None and math.isfinite(v) and v > 0]
+    values = [
+        v
+        for v in (call_iv, put_iv)
+        if v is not None and math.isfinite(v) and 0 < v <= MAX_ANALYTICS_IV
+    ]
     return fmean(values) if values else None
 
 
@@ -257,13 +263,28 @@ def ratio(numerator: float | None, denominator: float | None) -> float | None:
 
 
 def compute_skew(chain: Iterable[dict], target_delta: float) -> float | None:
-    puts = [row for row in chain if row.get("option_type") == "PE" and row.get("iv") is not None and row.get("delta") is not None]
-    calls = [row for row in chain if row.get("option_type") == "CE" and row.get("iv") is not None and row.get("delta") is not None]
+    puts = [
+        row
+        for row in chain
+        if row.get("option_type") == "PE"
+        and row.get("iv") is not None
+        and 0 < float(row["iv"]) <= MAX_ANALYTICS_IV
+        and row.get("delta") is not None
+    ]
+    calls = [
+        row
+        for row in chain
+        if row.get("option_type") == "CE"
+        and row.get("iv") is not None
+        and 0 < float(row["iv"]) <= MAX_ANALYTICS_IV
+        and row.get("delta") is not None
+    ]
     if not puts or not calls:
         return None
     put = min(puts, key=lambda row: abs(abs(float(row["delta"])) - target_delta))
     call = min(calls, key=lambda row: abs(float(row["delta"]) - target_delta))
-    return float(put["iv"]) - float(call["iv"])
+    skew = float(put["iv"]) - float(call["iv"])
+    return skew if abs(skew) <= MAX_ABS_ANALYTICS_SKEW else None
 
 
 def smoothed_skew(*skews: float | None) -> float | None:

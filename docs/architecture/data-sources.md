@@ -50,9 +50,9 @@ Metadata enrichment uses:
 
 - NSE `EQUITY_L.csv` for company name, ISIN, and market lot.
 - NSE index constituent CSVs for Nifty flags and partial industry coverage.
-- Optional NSE `quote-equity` calls via `scripts/refresh_symbol_universe.py --enrich-quote` for richer sector, industry, and tick-size values.
+- Optional NSE `quote-equity` calls via `scripts/initialize_market_data.py --enrich-quote` for richer sector, industry, and tick-size values.
 
-As of the 2026-05-19 refresh, the local DB has 214 active symbols: 209 stock underlyings
+As of the 2026-05-20 refresh, the local DB has 214 active symbols: 209 stock underlyings
 and 5 index underlyings.
 
 ## Trading Calendar
@@ -62,3 +62,14 @@ A date is a trading day when equity or F&O bhavcopy rows exist locally. Weekends
 `weekend`; missing weekdays are marked `no_local_bhavcopy` until data is loaded or the source
 failure is investigated. This avoids incorrectly declaring an NSE holiday when the real issue is
 a failed download.
+
+## Historical Backtest Granularity
+
+Historical option data is loaded from daily bhavcopy files. Each contract has daily OHLC fields,
+not intraday timestamps. The straddle backtest therefore stores one row per symbol per trading day:
+
+- entry price = option `OPEN`
+- exit price = option `CLOSE`
+
+Live or intraday data should be added through the Dhan/live option-chain path when exact timed
+morning/evening execution is required.

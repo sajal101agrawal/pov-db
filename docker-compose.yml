@@ -28,7 +28,7 @@ services:
 
   api:
     build: .
-    env_file: .env.example
+    env_file: .env
     environment:
       DATABASE_URL: postgresql://pov:pov@postgres:5432/pov
       REDIS_URL: redis://redis:6379/0
@@ -39,6 +39,21 @@ services:
         condition: service_healthy
     ports:
       - "8001:8000"
+    volumes:
+      - ./data:/app/data
+
+  worker:
+    build: .
+    env_file: .env
+    command: python scripts/live_snapshot_worker.py
+    environment:
+      DATABASE_URL: postgresql://pov:pov@postgres:5432/pov
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./data:/app/data
 

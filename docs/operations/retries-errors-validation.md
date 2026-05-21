@@ -1,6 +1,6 @@
 # Retries, Failures, and Validation
 
-Last validated locally: 2026-05-20.
+Last validated locally: 2026-05-21.
 
 ## Retry Policy
 
@@ -50,8 +50,10 @@ Errors are stored in `error_log`.
 
 Currently logged:
 
-- `bootstrap_history` failures during historical runs.
-- `run_pipeline` failures from CLI manual runs.
+- `initialize_market_data` failures during historical runs.
+- `daily_update` failures during daily ETL runs.
+- `live_snapshot_worker` failures during Dhan live polling.
+- `api_live_snapshot` failures from `/api/admin/live-snapshot`.
 - `api_trigger_pipeline` failures from `/api/admin/trigger-pipeline`.
 - Uncaught API errors via the global FastAPI exception handler.
 
@@ -76,7 +78,7 @@ Checks last N trading days against fresh NSE bhavcopy downloads:
 python scripts/validate_market_data.py \
   --symbols RELIANCE,SBIN,INFY,HDFCBANK,TCS \
   --days 5 \
-  --end 2026-05-19 \
+  --end 2026-05-20 \
   --output data/validation_market_data_5symbols_5days.json
 ```
 
@@ -88,7 +90,7 @@ What it checks:
 
 Latest result:
 
-- Dates: `2026-05-13`, `2026-05-14`, `2026-05-15`, `2026-05-18`, `2026-05-19`
+- Dates: `2026-05-14`, `2026-05-15`, `2026-05-18`, `2026-05-19`, `2026-05-20`
 - Symbols: `RELIANCE`, `SBIN`, `INFY`, `HDFCBANK`, `TCS`
 - Mismatches: `0`
 
@@ -106,15 +108,19 @@ Checks:
 - Equity OHLC/volume ranges.
 - Option price, OI, IV, delta, Greek ranges.
 - Option `days_to_expiry` formula.
-- Daily metrics vol/RSI/percentile ranges.
+- Daily metrics vol/RSI/percentile ranges, including `rv_60` and `rv_90`.
 - Daily metrics DTE equals selected expiry minus trade date.
 - Straddle total and PnL formulas.
+- Straddle expiry equals the available expiry closest to 30 calendar DTE.
+- Straddle entry/exit legs exist at the same strike and expiry.
 - Trading calendar not empty.
 - Active symbol universe exists.
 - All symbols seen in loaded equity/options history exist in `symbol_universe`.
 - Active F&O equity symbols have at least `company_name` and `isin` after metadata refresh.
 - Trading calendar flags match locally loaded equity/options dates.
 - Diagnostic sections explain skew nulls, aggregate result nulls, large day-over-day metric moves, and symbol date gaps.
+- Percentile diagnostics verify nulls are excluded from ranking denominators and current-null
+  metrics remain null instead of being coerced to zero.
 
 Latest result:
 
@@ -127,11 +133,12 @@ Nulls are not all defects. Current expected null classes:
 - `equity_historical.delivery_volume`: not consistently present in the current NSE CM source.
 - `options_historical.iv` and Greeks: no-solution/no-market contracts.
 - `symbol_daily_metrics.rv_*`: insufficient historical close window.
-- `symbol_daily_metrics.vrp`: missing 20-trading-day lagged RV30.
+- `symbol_daily_metrics.vrp`: missing current RV30 or missing 20-trading-day lagged IV30.
 - `symbol_daily_metrics.weekly_rsi`: insufficient weekly close history.
-- `symbol_aggregates` result fields: no result-event overlap for that symbol in loaded history. Run `scripts/load_events.py` before judging these fields.
-- `symbol_universe.sector`: available from NSE quote metadata or index files, not from bhavcopy. Run `scripts/refresh_symbol_universe.py --enrich-quote` to fill it where NSE exposes it.
-- `live_snapshot`: empty until live ingestion is implemented.
+- `symbol_aggregates` result/earnings fields: no result-event overlap with a valid previous
+  trading-day entry and next trading-day exit.
+- `symbol_universe.sector`: available from NSE quote metadata or index files, not from bhavcopy. Run `scripts/initialize_market_data.py --enrich-quote` to fill it where NSE exposes it.
+- `live_snapshot`: empty until Dhan credentials are configured and the live worker/manual trigger succeeds.
 - `pipeline_state`: reserved for future job state.
 
 ## Current Local Data Quality Snapshot
@@ -159,16 +166,16 @@ When a daily bhavcopy source fails:
 4. Bootstrap continues to the next date.
 5. Daily/manual pipeline raises after logging, so operators see failure clearly.
 
-For historical gaps, rerun:
+For a single-day repair, rerun:
 
 ```bash
-python scripts/run_pipeline.py --date YYYY-MM-DD --symbols RELIANCE,SBIN
+python scripts/daily_update.py --date YYYY-MM-DD --symbols RELIANCE,SBIN
 ```
 
 For larger repairs:
 
 ```bash
-python scripts/bootstrap_history.py --start YYYY-MM-DD --end YYYY-MM-DD --symbols RELIANCE,SBIN --force
+python scripts/initialize_market_data.py --start YYYY-MM-DD --end YYYY-MM-DD --symbols RELIANCE,SBIN --force
 python scripts/recompute_analytics.py --start YYYY-MM-DD --end YYYY-MM-DD --symbols RELIANCE,SBIN
 python scripts/validate_database.py
 ```
@@ -178,7 +185,7 @@ python scripts/validate_database.py
 Use one command for a new server:
 
 ```bash
-python scripts/initialize_market_data.py --years 4 --enrich-quote
+python scripts/initialize_market_data.py --years 5 --enrich-quote
 ```
 
 This loads date-by-date NSE bhavcopy data, computes contract IV/Greeks, daily metrics and straddle PnL, populates interest rates, refreshes the active F&O universe, enriches symbol metadata from NSE, loads result events, builds the local trading calendar, refreshes percentiles/aggregates, and logs every failed date in `error_log`.
@@ -194,3 +201,26 @@ python scripts/daily_update.py --date YYYY-MM-DD
 ```
 
 The daily update loads F&O and cash bhavcopy, computes metrics and PnL for that date, refreshes percentiles/aggregates, updates the calendar, refreshes symbol metadata from bulk NSE files, and loads result events unless `--skip-events` is provided.
+
+## Server Scripts
+
+Use these scripts on a server:
+
+```bash
+scripts/deploy_server.sh
+scripts/setup_server.sh
+scripts/bootstrap_history.sh
+scripts/install_daily_etl_cron.sh
+```
+
+Defaults:
+
+- `deploy_server.sh` is the one-command idempotent path. It creates `.env`, starts services,
+  bootstraps only if the DB is empty, installs cron by default, and restarts API/worker.
+- `setup_server.sh` creates `.env` if absent, builds containers, and waits for API health.
+- `bootstrap_history.sh` runs `initialize_market_data.py --years 5`, validates the DB, clears Redis, and restarts the API.
+- `install_daily_etl_cron.sh` installs a weekday cron at `22:30` server time. It runs daily ETL, validates the DB, and clears Redis cache. Override with `CRON_TIME="45 22 * * 1-5"`.
+
+Docker Compose owns the multi-service deployment because a Dockerfile can only build one
+container image. The app Dockerfile builds the API/worker image; `docker-compose.yml` wires
+Postgres, Redis, API, worker, persistent volumes, and service health checks.

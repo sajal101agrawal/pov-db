@@ -1,6 +1,6 @@
 # Database Dictionary
 
-Last validated locally: 2026-05-20.
+Last validated locally: 2026-05-21.
 
 ## Unit Policy
 
@@ -84,10 +84,10 @@ Purpose: one dashboard-ready row per symbol per trade date.
 Important columns:
 
 - `iv_30/iv_60/iv_90`: synthetic constant-maturity IVs, decimal annualized.
-- `expiry_30d/expiry_60d/expiry_90d`: actual exchange expiries selected for snapshots/strategy.
+- `expiry_30d/expiry_60d/expiry_90d`: first/second/third monthly exchange-expiry buckets.
 - `dte_30/dte_60/dte_90`: actual calendar days from `trade_date` to the selected expiry.
-- `rv_10/rv_20/rv_30`: close-to-close realized vol, decimal annualized.
-- `vrp`: `iv_30(today) - rv_30(20 trading days earlier)`.
+- `rv_10/rv_20/rv_30/rv_60/rv_90`: Yang-Zhang realized vol, decimal annualized.
+- `vrp`: `iv_30(20 trading days earlier) - rv_30(today)`.
 - `fwdv_3060`: synthetic forward volatility between target 30D and 60D maturities.
 - `fwdfct_3060`: `fwdv_3060 / iv_30`.
 - `iv_slope_3060`: `(iv_60 - iv_30) / 30`.
@@ -98,9 +98,11 @@ Important columns:
 Expected nulls:
 
 - RV fields are null until enough historical closes exist.
-- VRP is null until lagged RV30 exists.
+- VRP is null until current RV30 and lagged IV30 exist.
 - Weekly RSI is null until enough weekly closes exist.
-- Percentiles are null for rows that predate the final percentile refresh.
+- Percentiles are null when the current value is null. Non-null percentile calculations rank
+  against the trailing available non-null observations for the same symbol; null observations
+  are not counted in the percentile denominator.
 - `nearest_ce_iv` can be null if the selected ATM call leg has no valid IV.
 
 Validation rules:
@@ -116,11 +118,17 @@ Purpose: daily short ATM straddle backtest.
 Method:
 
 - Entry spot: underlying open.
-- Expiry: `symbol_daily_metrics.expiry_30d`.
+- Expiry: available option expiry closest to 30 calendar DTE.
 - Strike: nearest strike to underlying open.
 - Entry: CE open + PE open.
 - Exit: CE close + PE close.
 - PnL: entry total - exit total.
+
+Historical granularity:
+
+- NSE bhavcopy is one EOD file per trading day, so the historical strategy uses contract `OPEN`
+  as morning entry proxy and contract `CLOSE` as EOD exit proxy.
+- There is no intraday timestamped entry/exit until a live or intraday option-chain source is added.
 
 Expected nulls:
 
@@ -141,6 +149,8 @@ Purpose: one row per symbol derived from `straddle_pnl` and `symbol_daily_metric
 Expected nulls:
 
 - Result-event analytics are null for symbols with no result-event overlap in loaded history.
+- Earnings strategy aggregate fields are null when there is no valid result event with a
+  previous trading-day entry and next trading-day exit using the same ATM straddle legs.
 
 ### `symbol_universe`
 
@@ -149,7 +159,7 @@ Purpose: active NSE F&O symbol registry.
 Current refresh:
 
 - Source: latest NSE F&O bhavcopy.
-- Active universe on 2026-05-19: 214 symbols, including 209 stock underlyings and 5 index underlyings.
+- Active universe on 2026-05-20: 214 symbols, including 209 stock underlyings and 5 index underlyings.
 
 Expected nulls:
 
@@ -190,9 +200,11 @@ Future email alerts should hook into this table or the global exception handler 
 
 Purpose: optional PostgreSQL fallback/audit table for live data.
 
-Current status:
+Current write path:
 
-- Empty until live ingestion is implemented.
+- `scripts/live_snapshot_worker.py` polls Dhan during the configured IST market window.
+- `POST /api/admin/live-snapshot` can trigger a manual snapshot after Dhan credentials are configured.
+- The same normalized payload is written to Redis for the live API and to PostgreSQL for audit.
 
 ### `pipeline_state`
 

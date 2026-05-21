@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from datetime import datetime
 from typing import Any, Iterable
 
 import asyncpg
@@ -48,6 +49,34 @@ class MarketRepository:
         )
         return [row["symbol"] for row in rows]
 
+    async def live_baseline(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        if not symbols:
+            return {}
+        rows = await self.pool.fetch(
+            """
+            SELECT DISTINCT ON (sdm.symbol)
+                   sdm.symbol,
+                   sdm.trade_date,
+                   sdm.avg_option_volume::float,
+                   sdm.iv_30::float,
+                   sdm.rv_30::float,
+                   sdm.vrp::float,
+                   sdm.skew_25::float,
+                   sdm.dte_30,
+                   sdm.expiry_30d,
+                   su.company_name,
+                   su.symbol_type,
+                   su.sector,
+                   su.industry
+            FROM symbol_daily_metrics sdm
+            LEFT JOIN symbol_universe su USING (symbol)
+            WHERE sdm.symbol = ANY($1::varchar[])
+            ORDER BY sdm.symbol, sdm.trade_date DESC
+            """,
+            symbols,
+        )
+        return {row["symbol"]: dict(row) for row in rows}
+
     async def upsert_discovered_symbols(self, rows: Iterable[dict[str, Any]]) -> int:
         items = list(rows)
         if not items:
@@ -79,7 +108,7 @@ class MarketRepository:
                     is_nifty50, is_nifty100, is_banknifty, is_midcap, is_active,
                     yahoo_symbol, updated_at
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,TRUE,$12,NOW())
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,FALSE,$12,NOW())
                 ON CONFLICT (symbol)
                 DO UPDATE SET
                     company_name = COALESCE(EXCLUDED.company_name, symbol_universe.company_name),
@@ -297,6 +326,33 @@ class MarketRepository:
             )
         return len(items)
 
+    async def insert_live_snapshot(
+        self,
+        symbol: str,
+        snapshot_time: datetime,
+        payload: dict[str, Any],
+    ) -> None:
+        await self.pool.execute(
+            """
+            INSERT INTO live_snapshot (
+                symbol, snapshot_time, current_price, pnl, maxloss, option_chain
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            ON CONFLICT (symbol, snapshot_time)
+            DO UPDATE SET
+                current_price = EXCLUDED.current_price,
+                pnl = EXCLUDED.pnl,
+                maxloss = EXCLUDED.maxloss,
+                option_chain = EXCLUDED.option_chain
+            """,
+            symbol.upper(),
+            snapshot_time,
+            payload.get("underlying_last_price"),
+            payload.get("pnl"),
+            payload.get("maxloss"),
+            json.dumps(payload, default=str),
+        )
+
     async def refresh_expiry_calendar(self, trade_date: date) -> int:
         result = await self.pool.execute(
             """
@@ -347,14 +403,14 @@ class MarketRepository:
         )
         return bool(value)
 
-    async def lagged_rv30(self, symbol: str, trade_date: date, lag_trading_days: int = 20) -> float | None:
+    async def lagged_iv30(self, symbol: str, trade_date: date, lag_trading_days: int = 20) -> float | None:
         if lag_trading_days < 1:
             return None
         value = await self.pool.fetchval(
             """
-            SELECT rv_30::float
+            SELECT iv_30::float
             FROM symbol_daily_metrics
-            WHERE symbol = $1 AND trade_date < $2 AND rv_30 IS NOT NULL
+            WHERE symbol = $1 AND trade_date < $2 AND iv_30 IS NOT NULL
             ORDER BY trade_date DESC
             OFFSET $3
             LIMIT 1
@@ -412,31 +468,85 @@ class MarketRepository:
         items = list(records)
         if not items:
             return 0
-        async with self.pool.acquire() as conn:
-            await conn.executemany(
-                """
-                UPDATE options_historical
-                SET iv=$6, delta=$7, gamma=$8, theta=$9, vega=$10, rho=$11, is_atm=$12
-                WHERE symbol=$1 AND trade_date=$2 AND expiry_date=$3 AND strike_price=$4 AND option_type=$5
-                """,
-                [
-                    (
-                        r["symbol"],
-                        r["trade_date"],
-                        r["expiry_date"],
-                        r["strike_price"],
-                        r["option_type"],
-                        r.get("iv"),
-                        r.get("delta"),
-                        r.get("gamma"),
-                        r.get("theta"),
-                        r.get("vega"),
-                        r.get("rho"),
-                        r.get("is_atm"),
-                    )
-                    for r in items
-                ],
+        payload = [
+            (
+                r["symbol"],
+                r["trade_date"],
+                r["expiry_date"],
+                r["strike_price"],
+                r["option_type"],
+                r.get("iv"),
+                r.get("delta"),
+                r.get("gamma"),
+                r.get("theta"),
+                r.get("vega"),
+                r.get("rho"),
+                r.get("is_atm"),
             )
+            for r in items
+        ]
+        symbol_key = payload[0][0]
+        trade_date_key = payload[0][1]
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    CREATE TEMP TABLE tmp_option_derived (
+                        symbol TEXT,
+                        trade_date DATE,
+                        expiry_date DATE,
+                        strike_price NUMERIC,
+                        option_type TEXT,
+                        iv DOUBLE PRECISION,
+                        delta DOUBLE PRECISION,
+                        gamma DOUBLE PRECISION,
+                        theta DOUBLE PRECISION,
+                        vega DOUBLE PRECISION,
+                        rho DOUBLE PRECISION,
+                        is_atm BOOLEAN
+                    ) ON COMMIT DROP
+                    """
+                )
+                await conn.copy_records_to_table(
+                    "tmp_option_derived",
+                    records=payload,
+                    columns=[
+                        "symbol",
+                        "trade_date",
+                        "expiry_date",
+                        "strike_price",
+                        "option_type",
+                        "iv",
+                        "delta",
+                        "gamma",
+                        "theta",
+                        "vega",
+                        "rho",
+                        "is_atm",
+                    ],
+                )
+                await conn.execute(
+                    """
+                    UPDATE options_historical AS target
+                    SET iv = source.iv,
+                        delta = source.delta,
+                        gamma = source.gamma,
+                        theta = source.theta,
+                        vega = source.vega,
+                        rho = source.rho,
+                        is_atm = source.is_atm
+                    FROM tmp_option_derived AS source
+                    WHERE target.symbol = $1
+                      AND target.trade_date = $2
+                      AND target.symbol = source.symbol
+                      AND target.trade_date = source.trade_date
+                      AND target.expiry_date = source.expiry_date
+                      AND target.strike_price = source.strike_price
+                      AND target.option_type = source.option_type
+                    """,
+                    symbol_key,
+                    trade_date_key,
+                )
         return len(items)
 
     async def upsert_daily_metric(self, metric: dict[str, Any]) -> None:
@@ -474,10 +584,22 @@ class MarketRepository:
             """
             WITH hist AS (
                 SELECT cur.symbol,
-                       100.0 * percent_rank(cur.iv_30) WITHIN GROUP (ORDER BY h.iv_30) AS iv30_pct,
-                       100.0 * percent_rank(cur.iv_60) WITHIN GROUP (ORDER BY h.iv_60) AS iv60_pct,
-                       100.0 * percent_rank(cur.iv_90) WITHIN GROUP (ORDER BY h.iv_90) AS iv90_pct,
-                       100.0 * percent_rank(cur.vrp) WITHIN GROUP (ORDER BY h.vrp) AS vrp_pct
+                       CASE WHEN cur.iv_30 IS NULL THEN NULL ELSE
+                           100.0 * percent_rank(cur.iv_30) WITHIN GROUP (ORDER BY h.iv_30)
+                           FILTER (WHERE h.iv_30 IS NOT NULL)
+                       END AS iv30_pct,
+                       CASE WHEN cur.iv_60 IS NULL THEN NULL ELSE
+                           100.0 * percent_rank(cur.iv_60) WITHIN GROUP (ORDER BY h.iv_60)
+                           FILTER (WHERE h.iv_60 IS NOT NULL)
+                       END AS iv60_pct,
+                       CASE WHEN cur.iv_90 IS NULL THEN NULL ELSE
+                           100.0 * percent_rank(cur.iv_90) WITHIN GROUP (ORDER BY h.iv_90)
+                           FILTER (WHERE h.iv_90 IS NOT NULL)
+                       END AS iv90_pct,
+                       CASE WHEN cur.vrp IS NULL THEN NULL ELSE
+                           100.0 * percent_rank(cur.vrp) WITHIN GROUP (ORDER BY h.vrp)
+                           FILTER (WHERE h.vrp IS NOT NULL)
+                       END AS vrp_pct
                 FROM symbol_daily_metrics cur
                 JOIN LATERAL (
                     SELECT iv_30, iv_60, iv_90, vrp
@@ -515,38 +637,128 @@ class MarketRepository:
     async def refresh_aggregates(self) -> None:
         await self.pool.execute(
             """
+            WITH daily AS (
+                SELECT
+                    sp.symbol,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE sp.is_winner) / NULLIF(COUNT(*), 0), 2) AS win_rate,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE sdm.vrp > 0) / NULLIF(COUNT(sdm.vrp), 0), 2) AS vrp_win_rate,
+                    AVG(sdm.vrp) AS avg_vrp_4y,
+                    AVG(sp.pnl) AS avg_straddle_pnl,
+                    AVG(sp.call_entry - sp.call_exit) AS avg_call_pnl,
+                    AVG(sp.put_entry - sp.put_exit) AS avg_put_pnl,
+                    MAX(sp.pnl) AS max_profit,
+                    MIN(sp.pnl) AS max_loss
+                FROM straddle_pnl sp
+                JOIN symbol_daily_metrics sdm USING (symbol, trade_date)
+                WHERE sp.skip_reason IS NULL
+                GROUP BY sp.symbol
+            ),
+            result_windows AS (
+                SELECT ev.symbol,
+                       ev.event_date,
+                       entry_day.trade_date AS entry_date,
+                       exit_day.trade_date AS exit_date
+                FROM events ev
+                JOIN LATERAL (
+                    SELECT trade_date
+                    FROM equity_historical eh
+                    WHERE eh.symbol = ev.symbol
+                      AND eh.trade_date < ev.event_date
+                    ORDER BY trade_date DESC
+                    LIMIT 1
+                ) entry_day ON TRUE
+                JOIN LATERAL (
+                    SELECT trade_date
+                    FROM equity_historical eh
+                    WHERE eh.symbol = ev.symbol
+                      AND eh.trade_date > ev.event_date
+                    ORDER BY trade_date
+                    LIMIT 1
+                ) exit_day ON TRUE
+                WHERE ev.event_type = 'RESULT'
+            ),
+            result_legs AS (
+                SELECT rw.symbol,
+                       rw.event_date,
+                       sp_entry.underlying_close::float AS entry_underlying_close,
+                       exit_eq.close::float AS exit_underlying_close,
+                       entry_sdm.iv_30::float AS entry_iv30,
+                       exit_sdm.iv_30::float AS exit_iv30,
+                       sp_entry.total_exit::float AS entry_total,
+                       (ce_exit.close::float + pe_exit.close::float) AS exit_total
+                FROM result_windows rw
+                JOIN straddle_pnl sp_entry
+                  ON sp_entry.symbol = rw.symbol
+                 AND sp_entry.trade_date = rw.entry_date
+                 AND sp_entry.skip_reason IS NULL
+                JOIN equity_historical exit_eq
+                  ON exit_eq.symbol = rw.symbol AND exit_eq.trade_date = rw.exit_date
+                JOIN symbol_daily_metrics entry_sdm
+                  ON entry_sdm.symbol = rw.symbol AND entry_sdm.trade_date = rw.entry_date
+                JOIN symbol_daily_metrics exit_sdm
+                  ON exit_sdm.symbol = rw.symbol AND exit_sdm.trade_date = rw.exit_date
+                JOIN options_historical ce_exit
+                  ON ce_exit.symbol = rw.symbol
+                 AND ce_exit.trade_date = rw.exit_date
+                 AND ce_exit.expiry_date = sp_entry.expiry_date
+                 AND ce_exit.strike_price = sp_entry.atm_strike
+                 AND ce_exit.option_type = 'CE'
+                JOIN options_historical pe_exit
+                  ON pe_exit.symbol = rw.symbol
+                 AND pe_exit.trade_date = rw.exit_date
+                 AND pe_exit.expiry_date = sp_entry.expiry_date
+                 AND pe_exit.strike_price = sp_entry.atm_strike
+                 AND pe_exit.option_type = 'PE'
+                WHERE sp_entry.underlying_close > 0
+                  AND sp_entry.total_exit IS NOT NULL
+                  AND ce_exit.close IS NOT NULL
+                  AND pe_exit.close IS NOT NULL
+            ),
+            earnings AS (
+                SELECT symbol,
+                       AVG((entry_iv30 - exit_iv30) / NULLIF(entry_iv30, 0)) AS historical_iv_crush,
+                       AVG(entry_total / NULLIF(entry_underlying_close, 0)) AS implied_result_move,
+                       AVG(ABS(exit_underlying_close - entry_underlying_close) / NULLIF(entry_underlying_close, 0)) AS avg_result_move,
+                       MAX(ABS(exit_underlying_close - entry_underlying_close) / NULLIF(entry_underlying_close, 0)) AS max_result_move,
+                       AVG(entry_total - exit_total) AS avg_earnings_pnl,
+                       ROUND(
+                           100.0 * COUNT(*) FILTER (WHERE entry_total - exit_total > 0)
+                           / NULLIF(COUNT(*), 0),
+                           2
+                       ) AS earnings_win_rate,
+                       MAX(entry_total - exit_total) AS max_earnings_profit,
+                       MIN(entry_total - exit_total) AS max_earnings_loss
+                FROM result_legs
+                GROUP BY symbol
+            )
             INSERT INTO symbol_aggregates (
                 symbol, win_rate, vrp_win_rate, avg_vrp_4y, avg_straddle_pnl,
                 avg_call_pnl, avg_put_pnl, max_profit, max_loss, historical_iv_crush,
-                implied_result_move, avg_result_move, max_result_move, updated_at
+                implied_result_move, avg_result_move, max_result_move,
+                avg_earnings_pnl, earnings_win_rate, max_earnings_profit, max_earnings_loss,
+                updated_at
             )
             SELECT
-                sp.symbol,
-                ROUND(100.0 * COUNT(*) FILTER (WHERE sp.is_winner) / NULLIF(COUNT(*), 0), 2),
-                ROUND(100.0 * COUNT(*) FILTER (WHERE sdm.iv_30 > sdm.rv_30) / NULLIF(COUNT(*), 0), 2),
-                AVG(sdm.vrp),
-                AVG(sp.pnl),
-                AVG(sp.call_entry - sp.call_exit),
-                AVG(sp.put_entry - sp.put_exit),
-                MAX(sp.pnl),
-                MIN(sp.pnl),
-                AVG((prev.iv_30 - next_day.iv_30) / NULLIF(prev.iv_30, 0)) FILTER (WHERE ev.event_type = 'RESULT'),
-                AVG(sp.total_entry / NULLIF(sp.underlying_open, 0)) FILTER (WHERE ev.event_type = 'RESULT'),
-                AVG(abs(sp.underlying_move_pct) / 100.0) FILTER (WHERE ev.event_type = 'RESULT'),
-                MAX(abs(sp.underlying_move_pct) / 100.0) FILTER (WHERE ev.event_type = 'RESULT'),
+                daily.symbol,
+                daily.win_rate,
+                daily.vrp_win_rate,
+                daily.avg_vrp_4y,
+                daily.avg_straddle_pnl,
+                daily.avg_call_pnl,
+                daily.avg_put_pnl,
+                daily.max_profit,
+                daily.max_loss,
+                earnings.historical_iv_crush,
+                earnings.implied_result_move,
+                earnings.avg_result_move,
+                earnings.max_result_move,
+                earnings.avg_earnings_pnl,
+                earnings.earnings_win_rate,
+                earnings.max_earnings_profit,
+                earnings.max_earnings_loss,
                 NOW()
-            FROM straddle_pnl sp
-            JOIN symbol_daily_metrics sdm USING (symbol, trade_date)
-            LEFT JOIN events ev ON ev.symbol = sp.symbol AND ev.event_date = sp.trade_date AND ev.event_type = 'RESULT'
-            LEFT JOIN symbol_daily_metrics prev ON prev.symbol = sp.symbol AND prev.trade_date = sp.trade_date
-            LEFT JOIN LATERAL (
-                SELECT iv_30 FROM symbol_daily_metrics n
-                WHERE n.symbol = sp.symbol AND n.trade_date > sp.trade_date
-                ORDER BY n.trade_date
-                LIMIT 1
-            ) next_day ON TRUE
-            WHERE sp.skip_reason IS NULL
-            GROUP BY sp.symbol
+            FROM daily
+            LEFT JOIN earnings USING (symbol)
             ON CONFLICT (symbol) DO UPDATE SET
                 win_rate = EXCLUDED.win_rate,
                 vrp_win_rate = EXCLUDED.vrp_win_rate,
@@ -560,6 +772,10 @@ class MarketRepository:
                 implied_result_move = EXCLUDED.implied_result_move,
                 avg_result_move = EXCLUDED.avg_result_move,
                 max_result_move = EXCLUDED.max_result_move,
+                avg_earnings_pnl = EXCLUDED.avg_earnings_pnl,
+                earnings_win_rate = EXCLUDED.earnings_win_rate,
+                max_earnings_profit = EXCLUDED.max_earnings_profit,
+                max_earnings_loss = EXCLUDED.max_earnings_loss,
                 updated_at = NOW()
             """
         )
@@ -590,7 +806,8 @@ class MarketRepository:
     async def history(self, symbol: str, days: int) -> list[dict[str, Any]]:
         rows = await self.pool.fetch(
             """
-            SELECT trade_date, iv_30::float, iv_60::float, iv_90::float, rv_30::float,
+            SELECT trade_date, iv_30::float, iv_60::float, iv_90::float,
+                   rv_30::float, rv_60::float, rv_90::float,
                    vrp::float, skew_25::float, fwdv_3060::float
             FROM symbol_daily_metrics
             WHERE symbol = $1

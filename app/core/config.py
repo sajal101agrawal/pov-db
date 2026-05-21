@@ -19,10 +19,16 @@ class Settings(BaseSettings):
     source_retry_base_delay_seconds: float = 0.75
     source_retry_max_delay_seconds: float = 8.0
     pipeline_symbol_limit: int | None = Field(default=None)
+    pipeline_compute_concurrency: int = 4
     dhan_client_id: str | None = None
     dhan_access_token: str | None = None
     live_option_chain_provider: str = "dhan"
+    live_market_quote_min_interval_seconds: float = 1.0
     live_option_chain_min_interval_seconds: float = 3.0
+    live_symbols: str = "RELIANCE,SBIN,INFY,HDFCBANK,TCS,NIFTY,BANKNIFTY"
+    live_poll_interval_seconds: int = 180
+    live_market_start_ist: str = "09:00"
+    live_market_end_ist: str = "16:00"
 
     @field_validator("pipeline_symbol_limit", mode="before")
     @classmethod
