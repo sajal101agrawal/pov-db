@@ -65,6 +65,54 @@ python scripts/apply_schema_updates.py
 python scripts/validate_database.py
 ```
 
+## ETL S3 Dump
+
+After every successful daily ETL run, `daily_update.py` automatically creates a PostgreSQL
+custom-format dump and uploads it to S3. No dump file is written to local disk — `pg_dump`
+stdout is piped directly to the S3 object. Dumps older than **15 days** are deleted from
+S3 automatically in the same run.
+
+### Required env vars
+
+| Variable | Description |
+|---|---|
+| `S3_DUMP_BUCKET` | S3 bucket name (dump is skipped when empty) |
+| `AWS_ACCESS_KEY_ID` | IAM access key with `s3:PutObject`, `s3:ListBucket`, `s3:DeleteObject` |
+| `AWS_SECRET_ACCESS_KEY` | Corresponding secret key |
+| `AWS_REGION` | Bucket region, default `ap-south-1` |
+| `S3_DUMP_PREFIX` | Key prefix inside the bucket, default `etl-dumps/` |
+
+### Dump key format
+
+```
+{S3_DUMP_PREFIX}pov-{YYYY-MM-DD}.dump
+```
+
+Example: `etl-dumps/pov-2026-05-22.dump`
+
+### Restoring from S3
+
+```bash
+# Download
+aws s3 cp s3://<bucket>/etl-dumps/pov-<date>.dump pov-prod.dump
+
+# Restore
+pg_restore --clean --if-exists --no-owner --dbname "$PROD_DATABASE_URL" pov-prod.dump
+```
+
+### IAM policy (minimum)
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:ListBucket"],
+  "Resource": [
+    "arn:aws:s3:::<bucket>",
+    "arn:aws:s3:::<bucket>/etl-dumps/*"
+  ]
+}
+```
+
 ## EC2 Deploy Flow
 
 1. Clone the repo on EC2.
@@ -74,6 +122,8 @@ python scripts/validate_database.py
    - `REDIS_URL=redis://redis:6379/0` if Redis is local Docker
    - `DHAN_CLIENT_ID=...`
    - `DHAN_ACCESS_TOKEN=...`
+   - `S3_DUMP_BUCKET=...` (optional but recommended for automated backups)
+   - `AWS_ACCESS_KEY_ID=...` / `AWS_SECRET_ACCESS_KEY=...`
 4. Run:
 
 ```bash
@@ -113,7 +163,7 @@ Default: weekdays at `22:30` server time. Set the EC2 timezone to IST or overrid
 The daily job:
 
 - applies schema updates
-- runs `daily_update.py`
+- runs `daily_update.py` (includes S3 dump upload + old dump pruning if `S3_DUMP_BUCKET` is set)
 - validates DB ranges/formulas
 - clears Redis dashboard cache
 

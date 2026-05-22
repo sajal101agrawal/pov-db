@@ -14,6 +14,7 @@ from app.db.pool import close_pool, get_pool
 from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
 from app.services.factory import build_bhavcopy_source
+from app.services.s3_dump import upload_etl_dump
 from app.sources.nse import NSEArchiveClient
 from app.sources.nse_events import NSECorporateEventsClient
 from app.sources.nse_metadata import NSEMetadataClient
@@ -73,6 +74,8 @@ async def main() -> None:
                 await NSECorporateEventsClient(settings.nse_request_delay_seconds).fetch_result_events(event_symbols)
             )
 
+        dump_result = await asyncio.to_thread(upload_etl_dump, settings, trade_date)
+
         print(
             json.dumps(
                 {
@@ -81,6 +84,7 @@ async def main() -> None:
                     "active_symbols": len(active_symbols),
                     "metadata_upserted": metadata_count,
                     "events_upserted": events_count,
+                    "s3_dump": dump_result,
                 },
                 default=str,
             )

@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     source_retry_max_delay_seconds: float = 8.0
     pipeline_symbol_limit: int | None = Field(default=None)
     pipeline_compute_concurrency: int = 4
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_region: str = "ap-south-1"
+    s3_dump_bucket: str | None = None
+    s3_dump_prefix: str = "etl-dumps/"
     dhan_client_id: str | None = None
     dhan_access_token: str | None = None
     live_option_chain_provider: str = "dhan"
