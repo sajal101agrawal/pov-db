@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import threading
 from datetime import date, timedelta
 
 import boto3
@@ -28,7 +29,7 @@ def _parse_date_from_key(key: str) -> date | None:
 
 
 def upload_etl_dump(settings: Settings, dump_date: date | None = None) -> dict:
-    """Run pg_dump, stream output directly to S3, then prune dumps older than 15 days."""
+    """Run pg_dump, stream stdout directly to S3, then prune dumps older than 15 days."""
     if not settings.s3_dump_bucket:
         logger.info("S3_DUMP_BUCKET not configured — skipping ETL dump upload")
         return {"skipped": True, "reason": "S3_DUMP_BUCKET not set"}
@@ -50,13 +51,24 @@ def upload_etl_dump(settings: Settings, dump_date: date | None = None) -> dict:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+    # Drain stderr on a background thread so the OS pipe buffer never fills up
+    # and causes a deadlock while upload_fileobj is consuming stdout.
+    stderr_chunks: list[bytes] = []
+    stderr_thread = threading.Thread(
+        target=lambda: stderr_chunks.append(proc.stderr.read()),
+        daemon=True,
+    )
+    stderr_thread.start()
+
     try:
         s3.upload_fileobj(proc.stdout, settings.s3_dump_bucket, key)
     finally:
         proc.stdout.close()
-        stderr_out = proc.stderr.read().decode(errors="replace")
+        stderr_thread.join()
         proc.wait()
 
+    stderr_out = (stderr_chunks[0] if stderr_chunks else b"").decode(errors="replace")
     if proc.returncode != 0:
         raise RuntimeError(f"pg_dump failed (exit {proc.returncode}): {stderr_out.strip()}")
 
