@@ -14,15 +14,14 @@ fi
 sudo apt-get update -q
 sudo apt-get install -y nginx certbot python3-certbot-nginx
 
-# Copy site config
+# Deploy HTTP-only config (no SSL refs yet — certbot adds those)
 sudo cp "$ROOT_DIR/config/nginx/$DOMAIN" "/etc/nginx/sites-available/$DOMAIN"
 sudo ln -sf "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
 sudo rm -f /etc/nginx/sites-enabled/default
-
-# Test config before touching anything
 sudo nginx -t
+sudo systemctl reload nginx
 
-# Obtain SSL certificate (also auto-patches the nginx config with SSL paths)
+# Obtain SSL cert and let certbot patch the nginx config for HTTPS + redirect
 sudo certbot --nginx \
   --non-interactive \
   --agree-tos \
@@ -34,5 +33,4 @@ sudo systemctl reload nginx
 
 echo ""
 echo "Done. https://$DOMAIN is live."
-echo "Certbot auto-renew is managed by the certbot systemd timer:"
-echo "  systemctl status certbot.timer"
+echo "Auto-renewal: systemctl status certbot.timer"

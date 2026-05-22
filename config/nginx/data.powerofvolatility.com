@@ -2,19 +2,6 @@ server {
     listen 80;
     server_name data.powerofvolatility.com;
 
-    # Redirect all HTTP to HTTPS
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    server_name data.powerofvolatility.com;
-
-    ssl_certificate     /etc/letsencrypt/live/data.powerofvolatility.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/data.powerofvolatility.com/privkey.pem;
-    include             /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
-
     # Security headers
     add_header X-Frame-Options        DENY;
     add_header X-Content-Type-Options nosniff;

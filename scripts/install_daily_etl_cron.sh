@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CRON_TIME="${CRON_TIME:-30 22 * * 1-5}"
+CRON_TIME="${CRON_TIME:-30 16 * * 1-5}"
 LOG_FILE="${LOG_FILE:-$ROOT_DIR/data/daily_etl.log}"
 COMPOSE_ARGS="${COMPOSE_ARGS:-}"
 PY_DATE='$(date +\%F)'

@@ -158,7 +158,7 @@ The cron job should run after NSE EOD bhavcopy is available:
 scripts/install_daily_etl_cron.sh
 ```
 
-Default: weekdays at `22:30` server time. Set the EC2 timezone to IST or override `CRON_TIME`.
+Default: weekdays at `16:30 UTC` (10:00 PM IST). Override with `CRON_TIME` if needed.
 
 The daily job:
 
