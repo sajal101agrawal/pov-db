@@ -85,6 +85,11 @@ Black-Scholes-Merton because historical Dhan Greeks are not available from the l
 Dhan Greeks are consumed only for live snapshots and should not be mixed into historical
 backtests unless a broker-provided historical chain source is added.
 
+DhanHQ's Expired Options Data API is the planned external validator for historical IV. It exposes
+expired option OHLC, IV, OI, volume, strike, and spot for up to the last five years, with up to
+30 days per request. Use it as a sample validator against our internally recalculated historical
+IV after `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` are configured.
+
 ## Operation
 
 Start/restart the worker:

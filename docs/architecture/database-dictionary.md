@@ -89,7 +89,7 @@ Important columns:
 - `rv_10/rv_20/rv_30/rv_60/rv_90`: Yang-Zhang realized vol, decimal annualized.
 - `vrp`: `iv_30(20 trading days earlier) - rv_30(today)`.
 - `fwdv_3060`: synthetic forward volatility between target 30D and 60D maturities.
-- `fwdfct_3060`: `fwdv_3060 / iv_30`.
+- `fwdfct_3060`: `(iv_30 / fwdv_3060) - 1`.
 - `iv_slope_3060`: `(iv_60 - iv_30) / 30`.
 - `skew_20/25/30`: put IV minus call IV at the closest target deltas.
 - `daily_rsi/weekly_rsi`: RSI on `0..100`.
@@ -118,17 +118,21 @@ Purpose: daily short ATM straddle backtest.
 Method:
 
 - Entry spot: underlying open.
-- Expiry: available option expiry closest to 30 calendar DTE.
+- Expiry: `symbol_daily_metrics.expiry_30d`, the first monthly exchange-expiry bucket.
 - Strike: nearest strike to underlying open.
 - Entry: CE open + PE open.
 - Exit: CE close + PE close.
 - PnL: entry total - exit total.
+- `underlying_move_pct`: same-day underlying open-to-close move in percent points. It is stored
+  for analysis/context and is not used to calculate option PnL.
 
 Historical granularity:
 
 - NSE bhavcopy is one EOD file per trading day, so the historical strategy uses contract `OPEN`
   as morning entry proxy and contract `CLOSE` as EOD exit proxy.
 - There is no intraday timestamped entry/exit until a live or intraday option-chain source is added.
+- Daily straddle PnL uses same-day option `OPEN` and `CLOSE`; previous-day entry logic applies
+  only to earnings-event aggregates.
 
 Expected nulls:
 
@@ -145,6 +149,26 @@ Validation rules:
 ### `symbol_aggregates`
 
 Purpose: one row per symbol derived from `straddle_pnl` and `symbol_daily_metrics`.
+
+Daily aggregate formulas:
+
+- `win_rate`: valid daily short-straddle rows with `pnl > 0`, divided by valid daily rows.
+- `vrp_win_rate`: metric rows with non-null `vrp > 0`, divided by non-null `vrp` rows.
+- `avg_vrp_4y`: legacy column name; currently averages all loaded lookback rows. In the
+  deployment run this is five years because the bootstrap lookback is five years.
+- `avg_straddle_pnl`, `avg_call_pnl`, `avg_put_pnl`: averages over valid daily straddle rows.
+
+Earnings aggregate formulas:
+
+- Entry date: previous loaded trading day before a `RESULT` event.
+- Exit date: next loaded trading day after the event.
+- Entry premium: entry-date EOD short-straddle credit, stored as `straddle_pnl.total_exit`
+  because the daily table names same-day close as the daily exit value.
+- Exit premium: same strike and expiry CE/PE closes on the exit date.
+- `avg_earnings_pnl`: average `entry_premium - exit_premium`, short-straddle direction.
+- `historical_iv_crush`: average `(entry_iv30 - exit_iv30) / entry_iv30`.
+- `implied_result_move`: average `entry_premium / entry_underlying_close`.
+- `avg_result_move`: average absolute underlying close-to-close move between entry and exit.
 
 Expected nulls:
 

@@ -48,7 +48,8 @@ def test_pdf_forward_factor_formula() -> None:
     fwdv = forward_volatility(0.20, 0.30, 30, 60)
     assert fwdv is not None
     assert math.isclose(fwdv, math.sqrt((0.30**2 * 60 - 0.20**2 * 30) / 30))
-    assert math.isclose(forward_factor(0.20, fwdv), fwdv / 0.20)
+    assert math.isclose(forward_factor(0.20, fwdv), (0.20 / fwdv) - 1.0)
+    assert forward_factor(0.20, 0.0) is None
 
 
 def test_iv_slope_uses_daily_dte_gap() -> None:
@@ -85,7 +86,7 @@ def test_monthly_expiry_buckets_collapse_index_weeklies() -> None:
     assert selected == [date(2026, 5, 28), date(2026, 6, 25), date(2026, 7, 30)]
 
 
-def test_straddle_expiry_selector_uses_closest_30_dte() -> None:
+def test_closest_target_expiry_helper() -> None:
     expiries = [date(2026, 5, 26), date(2026, 6, 30), date(2026, 7, 28)]
     assert _expiry_closest_to_target(expiries, date(2026, 5, 20), 30) == date(2026, 6, 30)
 

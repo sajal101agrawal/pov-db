@@ -16,26 +16,19 @@ The latest available NSE EOD bhavcopy in this local run is `2026-05-20`.
 
 This follows NSE’s option-chain IV convention of using 10% interest rate.
 
-## Five-Symbol Historical Recompute
-
-Recomputed analytics for:
-
-- `RELIANCE`
-- `SBIN`
-- `INFY`
-- `HDFCBANK`
-- `TCS`
+## All-Symbol Historical Load
 
 Window:
 
 - Start: `2021-05-20`
 - End: `2026-05-20`
-- Trading dates: `1,234`
-- Symbol-days: `6,170`
+- Latest trade date: `2026-05-20`
+- Metric symbol-days: `239,508`
+- Valid/repaired straddle rows: `238,849`
 
-The `2026-05-20` straddle rows were also recomputed for all symbols that had both F&O and
-cash-market data on that date, so the latest all-symbol PnL uses the corrected closest-30D
-strategy expiry.
+The historical run loaded all NSE F&O symbols available in the bhavcopies, refreshed symbol
+metadata, rebuilt daily metrics, recomputed RSI with Wilder smoothing, recomputed straddle PnL
+from the corrected `expiry_30d` bucket, and refreshed symbol aggregates.
 
 RV/VRP changes included in this recompute:
 
@@ -89,11 +82,8 @@ Refreshed from NSE F&O bhavcopy dated `2026-05-20`.
 
 | Category | Count |
 |---|---:|
-| Active stock underlyings | 209 |
-| Active index underlyings | 5 |
 | Active total | 214 |
-| Inactive historical symbols retained | 2,769 |
-| Total `symbol_universe` rows | 2,983 |
+| Total `symbol_universe` rows | 3,273 |
 
 ## Trading Calendar
 
@@ -101,7 +91,7 @@ Refreshed from NSE F&O bhavcopy dated `2026-05-20`.
 
 - Date range: `2020-01-01` to `2026-05-20`
 - Rows: `2,332`
-- Local trading days: `1,237`
+- Local trading days: loaded equity/options dates match calendar trading flags
 - Partial local trading days: `0`
 
 ## DB-Wide Validation
@@ -112,17 +102,17 @@ Table counts:
 
 | Table | Rows |
 |---|---:|
-| `options_historical` | 4,078,587 |
-| `equity_historical` | 90,635 |
-| `symbol_daily_metrics` | 13,561 |
-| `straddle_pnl` | 13,564 |
-| `symbol_aggregates` | 253 |
-| `symbol_universe` | 2,983 |
+| `options_historical` | 59,829,340 |
+| `equity_historical` | 2,605,593 |
+| `symbol_daily_metrics` | 239,508 |
+| `straddle_pnl` | 239,511 |
+| `symbol_aggregates` | 293 |
+| `symbol_universe` | 3,273 |
 | `interest_rates` | 1,674 |
-| `events` | 9,859 |
-| `expiry_calendar` | 1,863 |
+| `events` | 9,861 |
+| `expiry_calendar` | 13,465 |
 | `trading_calendar` | 2,332 |
-| `error_log` | 72 |
+| `error_log` | 144 |
 | `live_snapshot` | 0 |
 | `pipeline_state` | 0 |
 
@@ -132,16 +122,19 @@ Failing validation checks:
 
 Outlier diagnostics:
 
-- Continuous IV jumps over 50 vol points: `0`
-- Continuous skew jumps over 75 vol points: `0`
+- Continuous IV jumps over 50 vol points: `9`
+- Continuous skew jumps over 75 vol points: `5`
 - DB-wide IV/skew/range formula failures: `0`
-- Straddle expiry closest-to-30D failures: `0`
+- Straddle expiry/leg/ATM-strike formula failures: `0`
+- Split-like RV windows above the validation range were nulled and are now reported as expected
+  RV nulls rather than outlier values.
 
 Targeted formula checks:
 
 - Latest RELIANCE VRP rows matched `iv_30(t-20) - rv_30(t)` exactly to 10 decimal places.
 - `symbol_aggregates` daily PnL, win-rate, VRP win-rate, max-profit, and max-loss formula checks passed.
-- Earnings aggregate ranges passed; null earnings aggregates are restricted to symbols without usable result-event entry/exit windows.
+- Earnings aggregate formulas and ranges passed; null earnings aggregates are restricted to symbols
+  without usable result-event entry/exit windows.
 
 Latest RELIANCE RV/VRP sample:
 
@@ -166,18 +159,18 @@ Earnings aggregate sample:
 For `RELIANCE`:
 
 ```text
-2026-05-20 expiry=2026-06-30 dte=41 total_entry=92.25 total_exit=101.30 pnl=-9.05
+2026-05-20 expiry=2026-05-26 dte=6 total_entry=41.90 total_exit=49.85 pnl=-7.95
 ```
 
 Formula check:
 
 ```text
-pnl = total_entry - total_exit = 92.25 - 101.30 = -9.05
+pnl = total_entry - total_exit = 41.90 - 49.85 = -7.95
 ```
 
 ## Error Log
 
-`error_log` contains 72 source/bootstrap failures imported from historical bootstrap logs. These are
+`error_log` contains 144 source/bootstrap failures from historical bootstrap runs. These are
 mostly expected non-bhavcopy dates such as holidays or dates where all source URLs returned no data.
 
 Future API and pipeline errors now flow through the same table.

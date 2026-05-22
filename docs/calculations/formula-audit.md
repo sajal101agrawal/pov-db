@@ -122,6 +122,9 @@ Null policy:
 - `rv_60` needs 61 OHLC bars.
 - `rv_90` needs 91 OHLC bars.
 - The bootstrap refuses sparse windows that jump across long date gaps.
+- Split-like discontinuities are treated as invalid RV windows. If any close-to-close,
+  overnight, or open-to-close log return exceeds `ln(3)`, RV for that window is stored `NULL`
+  rather than allowing unadjusted corporate-action price jumps to pollute VRP/rankings.
 
 ## VRP
 
@@ -149,7 +152,7 @@ fwdv_3060 = sqrt((iv_60^2 * 60 - iv_30^2 * 30) / 30)
 Forward factor:
 
 ```text
-fwdfct_3060 = fwdv_3060 / iv_30
+fwdfct_3060 = (iv_30 / fwdv_3060) - 1
 ```
 
 Slope:
@@ -191,9 +194,13 @@ unsafe analytics inputs and stored as `NULL` in daily metrics rather than as ext
 
 ## RSI
 
-RSI uses simple average gains/losses:
+RSI uses Wilder's smoothing:
 
 ```text
+initial_avg_gain = average(gains over first 14 periods)
+initial_avg_loss = average(losses over first 14 periods)
+avg_gain_t = ((avg_gain_t-1 * 13) + gain_t) / 14
+avg_loss_t = ((avg_loss_t-1 * 13) + loss_t) / 14
 RS = avg_gain / avg_loss
 RSI = 100 - (100 / (1 + RS))
 ```
@@ -209,6 +216,8 @@ Null observations are excluded from percentile, average, ratio, and win-rate den
 - For a non-null current value, the trailing history uses only non-null observations for that
   metric on that symbol.
 - Aggregate PnL averages use only valid `straddle_pnl` rows where `skip_reason IS NULL`.
+- Aggregate VRP averages and `vrp_win_rate` use all non-null VRP metric rows for the symbol,
+  not only dates where the daily straddle row is valid.
 - Result-event averages are `NULL` when no loaded result-event rows overlap the symbol history.
 - Ratios return `NULL` when the denominator is `NULL`, zero, or negative.
 
@@ -217,7 +226,8 @@ Null observations are excluded from percentile, average, ratio, and win-rate den
 The strategy is the initial short ATM straddle strategy from the BE spec:
 
 1. For each symbol and trade date, use `equity_historical.open` as entry spot.
-2. Use the available option expiry closest to a 30-calendar-day DTE.
+2. Use `symbol_daily_metrics.expiry_30d`, the first monthly exchange-expiry bucket available
+   on that trade date.
 3. Pick the strike nearest to entry spot.
 4. Entry = ATM CE open + ATM PE open.
 5. Exit = same ATM CE close + same ATM PE close.
@@ -225,12 +235,43 @@ The strategy is the initial short ATM straddle strategy from the BE spec:
 7. `is_winner = pnl > 0`.
 8. `has_result_event` is true when `events` has a same-day `RESULT`.
 
+`underlying_move_pct` is context only:
+
+```text
+underlying_move_pct = (underlying_close - underlying_open) / underlying_open * 100
+```
+
+It is not an input into `pnl`; it explains how much the underlying moved during the same session.
+
 Historical NSE bhavcopy is one EOD file per trading day. It contains daily OHLC, not intraday
 timestamps. Therefore the historical backtest approximates:
 
 - morning entry with the option contract `OPEN`
 - EOD exit with the same option contract `CLOSE`
 
+Daily straddle PnL does not use previous-day option prices. Previous-day entry is used only for
+earnings-event analytics, where the strategy enters one trading day before the result and exits on
+the next trading-day close after the result.
+
 This aligns with the strategy document’s “short straddle entry at morning open, exit at EOD close”
-method at daily-bhavcopy granularity. True timed intraday entry/exit needs a separate intraday
-or live option-chain feed.
+method at daily-bhavcopy granularity. The “30DTE” strategy bucket is implemented as the platform’s
+`expiry_30d` bucket, not the synthetic `iv_30` interpolation horizon. True timed intraday entry/exit
+needs a separate intraday or live option-chain feed.
+
+## Earnings Event Backtest
+
+Earnings analytics use a different timing rule from the daily straddle report:
+
+1. Event source identifies a `RESULT` event date.
+2. Entry date is the previous loaded trading day before the result date.
+3. Exit date is the next loaded trading day after the result date.
+4. Entry premium uses the entry-date ATM short straddle close proxy (`total_exit` in `straddle_pnl`,
+   because the daily straddle table names the same value as the EOD close).
+5. Exit premium uses the same strike and expiry option closes on the exit date.
+6. Earnings PnL is short-straddle credit minus exit cost.
+7. Actual result move is `abs(exit_underlying_close - entry_underlying_close) / entry_underlying_close`.
+8. Implied result move is `entry_premium / entry_underlying_close`.
+
+This implements the requested “one trading day before result announcement to next trading-day close
+after result” convention using EOD bhavcopy data. The table names are historical, but the event
+aggregate formula uses the correct EOD entry and EOD exit fields.

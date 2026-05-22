@@ -107,7 +107,10 @@ class Pipeline:
         chain = await self.repository.option_chain(symbol, trade_date)
         if not chain:
             return
-        atm_strike = min({float(r["strike_price"]) for r in chain}, key=lambda strike: abs(strike - spot_close))
+        atm_strike = min(
+            {float(r["strike_price"]) for r in chain},
+            key=lambda strike: (abs(strike - spot_close), strike),
+        )
 
         derived = []
         for row in chain:
@@ -178,7 +181,10 @@ class Pipeline:
             rows = [r for r in chain if r["expiry_date"] == expiry]
             if not rows:
                 return None, None, None, None
-            strike = min({float(r["strike_price"]) for r in rows}, key=lambda value: abs(value - spot_close))
+            strike = min(
+                {float(r["strike_price"]) for r in rows},
+                key=lambda value: (abs(value - spot_close), value),
+            )
             ce = next((r for r in rows if float(r["strike_price"]) == strike and r["option_type"] == "CE"), None)
             pe = next((r for r in rows if float(r["strike_price"]) == strike and r["option_type"] == "PE"), None)
             return strike, ce, pe, atm_iv(ce.get("iv") if ce else None, pe.get("iv") if pe else None)
@@ -269,7 +275,10 @@ class Pipeline:
                 trade_date,
             )
         ]
-        expiry = _expiry_closest_to_target(expiries, trade_date, 30)
+        expiry = metrics.get("expiry_30d")
+        if expiry not in expiries:
+            expiry_buckets = _monthly_expiry_buckets(expiries)
+            expiry = expiry_buckets[0] if expiry_buckets else None
         if not expiry:
             await self.repository.upsert_straddle_pnl({"symbol": symbol, "trade_date": trade_date, "skip_reason": "NO_EXPIRY"})
             return
@@ -277,7 +286,10 @@ class Pipeline:
         if not chain:
             await self.repository.upsert_straddle_pnl({"symbol": symbol, "trade_date": trade_date, "skip_reason": "NO_DATA"})
             return
-        strike = min({float(r["strike_price"]) for r in chain}, key=lambda value: abs(value - spot_open))
+        strike = min(
+            {float(r["strike_price"]) for r in chain},
+            key=lambda value: (abs(value - spot_open), value),
+        )
         ce = next((r for r in chain if float(r["strike_price"]) == strike and r["option_type"] == "CE"), None)
         pe = next((r for r in chain if float(r["strike_price"]) == strike and r["option_type"] == "PE"), None)
         if not ce or not pe or ce.get("open") is None or pe.get("open") is None or ce.get("close") is None or pe.get("close") is None:

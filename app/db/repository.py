@@ -637,21 +637,26 @@ class MarketRepository:
     async def refresh_aggregates(self) -> None:
         await self.pool.execute(
             """
-            WITH daily AS (
+            WITH straddle_daily AS (
                 SELECT
                     sp.symbol,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE sp.is_winner) / NULLIF(COUNT(*), 0), 2) AS win_rate,
-                    ROUND(100.0 * COUNT(*) FILTER (WHERE sdm.vrp > 0) / NULLIF(COUNT(sdm.vrp), 0), 2) AS vrp_win_rate,
-                    AVG(sdm.vrp) AS avg_vrp_4y,
                     AVG(sp.pnl) AS avg_straddle_pnl,
                     AVG(sp.call_entry - sp.call_exit) AS avg_call_pnl,
                     AVG(sp.put_entry - sp.put_exit) AS avg_put_pnl,
                     MAX(sp.pnl) AS max_profit,
                     MIN(sp.pnl) AS max_loss
                 FROM straddle_pnl sp
-                JOIN symbol_daily_metrics sdm USING (symbol, trade_date)
                 WHERE sp.skip_reason IS NULL
                 GROUP BY sp.symbol
+            ),
+            metric_daily AS (
+                SELECT
+                    symbol,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE vrp > 0) / NULLIF(COUNT(vrp), 0), 2) AS vrp_win_rate,
+                    AVG(vrp) AS avg_vrp_4y
+                FROM symbol_daily_metrics
+                GROUP BY symbol
             ),
             result_windows AS (
                 SELECT ev.symbol,
@@ -739,15 +744,15 @@ class MarketRepository:
                 updated_at
             )
             SELECT
-                daily.symbol,
-                daily.win_rate,
-                daily.vrp_win_rate,
-                daily.avg_vrp_4y,
-                daily.avg_straddle_pnl,
-                daily.avg_call_pnl,
-                daily.avg_put_pnl,
-                daily.max_profit,
-                daily.max_loss,
+                straddle_daily.symbol,
+                straddle_daily.win_rate,
+                metric_daily.vrp_win_rate,
+                metric_daily.avg_vrp_4y,
+                straddle_daily.avg_straddle_pnl,
+                straddle_daily.avg_call_pnl,
+                straddle_daily.avg_put_pnl,
+                straddle_daily.max_profit,
+                straddle_daily.max_loss,
                 earnings.historical_iv_crush,
                 earnings.implied_result_move,
                 earnings.avg_result_move,
@@ -757,7 +762,8 @@ class MarketRepository:
                 earnings.max_earnings_profit,
                 earnings.max_earnings_loss,
                 NOW()
-            FROM daily
+            FROM straddle_daily
+            LEFT JOIN metric_daily USING (symbol)
             LEFT JOIN earnings USING (symbol)
             ON CONFLICT (symbol) DO UPDATE SET
                 win_rate = EXCLUDED.win_rate,

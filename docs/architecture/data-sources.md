@@ -73,3 +73,31 @@ not intraday timestamps. The straddle backtest therefore stores one row per symb
 
 Live or intraday data should be added through the Dhan/live option-chain path when exact timed
 morning/evening execution is required.
+
+## Historical IV Cross-Validation
+
+DhanHQ's Expired Options Data API (`POST /charts/rollingoption`) is the best external source to
+cross-check historical IV because it exposes expired option OHLC, IV, OI, volume, strike, and spot
+for up to the last five years. It can fetch up to 30 days in one call. Once Dhan credentials are
+configured, use this feed to sample ATM call/put IV for the same symbol, expiry bucket, strike, and
+date against `options_historical.iv` and `symbol_daily_metrics.iv_30`.
+
+Reference: [DhanHQ Expired Options Data](https://dhanhq.co/docs/v2/expired-options-data/).
+
+## Corporate Events
+
+Historical result events currently come from NSE corporate-event data and are loaded into
+`events` with `event_type='RESULT'`. That is the source of truth for completed/result-filed dates.
+
+For upcoming result calendars, NSE's public corporate calendar/disclosure pages do not always
+present the forward-looking schedule in the detail needed for trading workflows. The preferred
+production approach is:
+
+- keep NSE/BSE filings as the authoritative source whenever exact filed disclosures are available;
+- use a structured upcoming-results feed, such as Dhan's Stock Events Calendar or another licensed
+  earnings-calendar provider, for forward scheduling;
+- store the provider name in `events.source` so historical backtests can distinguish filed events
+  from upcoming/planned events.
+
+Sensibull-style calendars are useful operationally, but they should not be treated as the only
+authoritative source unless there is a stable API/license for production ingestion.

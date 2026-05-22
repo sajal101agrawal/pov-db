@@ -13,6 +13,7 @@ TRADING_DAYS_PER_YEAR = 252
 CALENDAR_DAYS_PER_YEAR = 365
 MAX_ANALYTICS_IV = 2.0
 MAX_ABS_ANALYTICS_SKEW = 0.75
+MAX_ABS_RV_LOG_RETURN = math.log(3.0)
 
 
 def _norm_cdf(x: float) -> float:
@@ -215,6 +216,13 @@ def yang_zhang_realized_vol(
 
     overnight = o[1:] - c[:-1]
     open_to_close = c[1:] - o[1:]
+    close_to_close = c[1:] - c[:-1]
+    if (
+        np.max(np.abs(overnight)) > MAX_ABS_RV_LOG_RETURN
+        or np.max(np.abs(open_to_close)) > MAX_ABS_RV_LOG_RETURN
+        or np.max(np.abs(close_to_close)) > MAX_ABS_RV_LOG_RETURN
+    ):
+        return None
     rs = (h[1:] - c[1:]) * (h[1:] - o[1:]) + (l[1:] - c[1:]) * (l[1:] - o[1:])
     if len(overnight) < 2:
         return None
@@ -245,9 +253,9 @@ def forward_volatility(iv_30: float | None, iv_60: float | None, dte_30: int = 3
 
 
 def forward_factor(iv_30: float | None, fwdv_3060: float | None) -> float | None:
-    if iv_30 is None or fwdv_3060 is None or iv_30 <= 0:
+    if iv_30 is None or fwdv_3060 is None or fwdv_3060 <= 0:
         return None
-    return fwdv_3060 / iv_30
+    return (iv_30 / fwdv_3060) - 1.0
 
 
 def iv_slope(iv_30: float | None, iv_60: float | None, dte_30: int = 30, dte_60: int = 60) -> float | None:
@@ -304,12 +312,17 @@ def percentile_rank(history: Sequence[float], current: float | None) -> float | 
 def rsi(closes: Sequence[float], period: int = 14) -> float | None:
     if len(closes) < period + 1:
         return None
-    arr = np.asarray(closes[-(period + 1) :], dtype=float)
+    arr = np.asarray(closes, dtype=float)
+    if np.any(arr <= 0) or not np.all(np.isfinite(arr)):
+        return None
     deltas = np.diff(arr)
-    gains = np.where(deltas > 0, deltas, 0.0)
-    losses = np.where(deltas < 0, -deltas, 0.0)
-    avg_gain = float(np.mean(gains[-period:]))
-    avg_loss = float(np.mean(losses[-period:]))
+    gains = np.maximum(deltas, 0.0)
+    losses = np.maximum(-deltas, 0.0)
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
+    for gain, loss in zip(gains[period:], losses[period:]):
+        avg_gain = ((avg_gain * (period - 1)) + float(gain)) / period
+        avg_loss = ((avg_loss * (period - 1)) + float(loss)) / period
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss

@@ -33,6 +33,13 @@ Initialize a fresh local server with the last five years of NSE F&O history:
 scripts/bootstrap_history.sh
 ```
 
+Repair/recompute derived analytics after a formula change:
+
+```bash
+python scripts/recompute_rsi_metrics.py
+python scripts/recompute_straddle_pnl.py
+```
+
 Run one daily EOD update after the NSE bhavcopy is published:
 
 ```bash

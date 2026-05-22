@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 COPY pyproject.toml README.md /app/
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --default-timeout=120 --retries 10 -e .
 
 COPY app /app/app
 COPY scripts /app/scripts

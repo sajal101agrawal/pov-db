@@ -111,8 +111,10 @@ Checks:
 - Daily metrics vol/RSI/percentile ranges, including `rv_60` and `rv_90`.
 - Daily metrics DTE equals selected expiry minus trade date.
 - Straddle total and PnL formulas.
-- Straddle expiry equals the available expiry closest to 30 calendar DTE.
-- Straddle entry/exit legs exist at the same strike and expiry.
+- Straddle expiry equals the `symbol_daily_metrics.expiry_30d` monthly bucket.
+- Straddle entry/exit prices match the same-strike CE/PE bhavcopy open/close values.
+- Straddle ATM strike is the nearest strike to underlying open.
+- Symbol aggregate daily and earnings backtest formulas.
 - Trading calendar not empty.
 - Active symbol universe exists.
 - All symbols seen in loaded equity/options history exist in `symbol_universe`.
@@ -125,6 +127,19 @@ Checks:
 Latest result:
 
 - Failing checks: none.
+
+### Formula Repair Utilities
+
+Future daily ETL uses the main pipeline formulas directly. If a historical formula changes and
+already-loaded rows must be regenerated without re-downloading bhavcopies, use:
+
+```bash
+python scripts/recompute_rsi_metrics.py
+python scripts/recompute_straddle_pnl.py
+python scripts/validate_database.py --output data/validation_database.json
+```
+
+These are not one-off patch scripts; they are reusable repair utilities for derived fields.
 
 ## Expected Nulls
 

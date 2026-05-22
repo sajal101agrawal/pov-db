@@ -26,13 +26,16 @@ RANGE_CHECKS = {
     "symbol_daily_metrics.vol_range": "SELECT COUNT(*) FROM symbol_daily_metrics WHERE iv_30 < 0 OR iv_30 > 5 OR iv_60 < 0 OR iv_60 > 5 OR iv_90 < 0 OR iv_90 > 5 OR rv_10 < 0 OR rv_10 > 5 OR rv_20 < 0 OR rv_20 > 5 OR rv_30 < 0 OR rv_30 > 5 OR rv_60 < 0 OR rv_60 > 5 OR rv_90 < 0 OR rv_90 > 5",
     "symbol_daily_metrics.rsi_range": "SELECT COUNT(*) FROM symbol_daily_metrics WHERE daily_rsi < 0 OR daily_rsi > 100 OR weekly_rsi < 0 OR weekly_rsi > 100",
     "symbol_daily_metrics.percentile_range": "SELECT COUNT(*) FROM symbol_daily_metrics WHERE iv_30_percentile < 0 OR iv_30_percentile > 100 OR iv_60_percentile < 0 OR iv_60_percentile > 100 OR iv_90_percentile < 0 OR iv_90_percentile > 100 OR vrp_percentile < 0 OR vrp_percentile > 100 OR skew_percentile < 0 OR skew_percentile > 100",
+    "symbol_daily_metrics.forward_factor_formula": "SELECT COUNT(*) FROM symbol_daily_metrics WHERE fwdfct_3060 IS NOT NULL AND ABS(fwdfct_3060 - ((iv_30 / NULLIF(fwdv_3060, 0)) - 1.0)) > 0.0001",
     "symbol_daily_metrics.dte_matches_expiry": "SELECT COUNT(*) FROM symbol_daily_metrics WHERE dte_30 IS DISTINCT FROM (expiry_30d - trade_date) OR dte_60 IS DISTINCT FROM (expiry_60d - trade_date) OR dte_90 IS DISTINCT FROM (expiry_90d - trade_date)",
     "symbol_daily_metrics.expiry_bucket_order": "WITH monthly AS (SELECT symbol, trade_date, expiry_date, ROW_NUMBER() OVER (PARTITION BY symbol, trade_date ORDER BY expiry_date) AS rn FROM (SELECT symbol, trade_date, MAX(expiry_date) AS expiry_date FROM options_historical WHERE expiry_date >= trade_date GROUP BY symbol, trade_date, date_trunc('month', expiry_date)) x), expected AS (SELECT symbol, trade_date, MAX(expiry_date) FILTER (WHERE rn = 1) AS exp1, MAX(expiry_date) FILTER (WHERE rn = 2) AS exp2, MAX(expiry_date) FILTER (WHERE rn = 3) AS exp3 FROM monthly WHERE rn <= 3 GROUP BY symbol, trade_date) SELECT COUNT(*) FROM symbol_daily_metrics s JOIN expected e USING (symbol, trade_date) WHERE s.expiry_30d IS DISTINCT FROM e.exp1 OR s.expiry_60d IS DISTINCT FROM e.exp2 OR s.expiry_90d IS DISTINCT FROM e.exp3",
     "straddle_pnl.total_entry": "SELECT COUNT(*) FROM straddle_pnl WHERE skip_reason IS NULL AND ABS(total_entry - (call_entry + put_entry)) > 0.01",
     "straddle_pnl.total_exit": "SELECT COUNT(*) FROM straddle_pnl WHERE skip_reason IS NULL AND ABS(total_exit - (call_exit + put_exit)) > 0.01",
     "straddle_pnl.pnl_formula": "SELECT COUNT(*) FROM straddle_pnl WHERE skip_reason IS NULL AND ABS(pnl - (total_entry - total_exit)) > 0.01",
     "straddle_pnl.move_formula": "SELECT COUNT(*) FROM straddle_pnl WHERE skip_reason IS NULL AND ABS(underlying_move_pct - ((underlying_close - underlying_open) / NULLIF(underlying_open, 0) * 100.0)) > 0.01",
-    "straddle_pnl.expiry_closest_30d": "WITH expected AS (SELECT symbol, trade_date, expiry_date FROM (SELECT DISTINCT symbol, trade_date, expiry_date, ROW_NUMBER() OVER (PARTITION BY symbol, trade_date ORDER BY ABS((expiry_date - trade_date) - 30), expiry_date) AS rn FROM options_historical WHERE expiry_date >= trade_date) x WHERE rn = 1) SELECT COUNT(*) FROM straddle_pnl sp JOIN expected e USING (symbol, trade_date) WHERE sp.skip_reason IS NULL AND sp.expiry_date IS DISTINCT FROM e.expiry_date",
+    "straddle_pnl.expiry_matches_metric_bucket": "SELECT COUNT(*) FROM straddle_pnl sp JOIN symbol_daily_metrics sdm USING (symbol, trade_date) WHERE sp.skip_reason IS NULL AND sp.expiry_date IS DISTINCT FROM sdm.expiry_30d",
+    "straddle_pnl.leg_prices_match_bhavcopy": "SELECT COUNT(*) FROM straddle_pnl sp JOIN options_historical ce ON ce.symbol = sp.symbol AND ce.trade_date = sp.trade_date AND ce.expiry_date = sp.expiry_date AND ce.strike_price = sp.atm_strike AND ce.option_type = 'CE' JOIN options_historical pe ON pe.symbol = sp.symbol AND pe.trade_date = sp.trade_date AND pe.expiry_date = sp.expiry_date AND pe.strike_price = sp.atm_strike AND pe.option_type = 'PE' WHERE sp.skip_reason IS NULL AND (ABS(sp.call_entry - ce.open) > 0.01 OR ABS(sp.put_entry - pe.open) > 0.01 OR ABS(sp.call_exit - ce.close) > 0.01 OR ABS(sp.put_exit - pe.close) > 0.01)",
+    "straddle_pnl.atm_strike_nearest_open": "WITH ranked AS (SELECT sp.symbol, sp.trade_date, oh.strike_price, ROW_NUMBER() OVER (PARTITION BY sp.symbol, sp.trade_date ORDER BY ABS(oh.strike_price - sp.underlying_open), oh.strike_price) AS rn FROM straddle_pnl sp JOIN options_historical oh ON oh.symbol = sp.symbol AND oh.trade_date = sp.trade_date AND oh.expiry_date = sp.expiry_date WHERE sp.skip_reason IS NULL) SELECT COUNT(*) FROM straddle_pnl sp JOIN ranked r USING (symbol, trade_date) WHERE r.rn = 1 AND sp.atm_strike IS DISTINCT FROM r.strike_price",
     "straddle_pnl.same_strike_legs": "SELECT COUNT(*) FROM straddle_pnl sp JOIN options_historical ce ON ce.symbol = sp.symbol AND ce.trade_date = sp.trade_date AND ce.expiry_date = sp.expiry_date AND ce.strike_price = sp.atm_strike AND ce.option_type = 'CE' JOIN options_historical pe ON pe.symbol = sp.symbol AND pe.trade_date = sp.trade_date AND pe.expiry_date = sp.expiry_date AND pe.strike_price = sp.atm_strike AND pe.option_type = 'PE' WHERE sp.skip_reason IS NULL AND (ce.open IS NULL OR pe.open IS NULL OR ce.close IS NULL OR pe.close IS NULL)",
     "trading_calendar.empty": "SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM trading_calendar",
     "trading_calendar.market_data_mismatch": "WITH md AS (SELECT trade_date FROM equity_historical UNION SELECT trade_date FROM options_historical) SELECT COUNT(*) FROM trading_calendar c FULL JOIN md USING (trade_date) WHERE COALESCE(c.is_trading_day, FALSE) IS DISTINCT FROM (md.trade_date IS NOT NULL)",
@@ -45,35 +48,20 @@ RANGE_CHECKS = {
     "symbol_aggregates.avg_pnl_formula": "WITH calc AS (SELECT symbol, AVG(pnl) AS value FROM straddle_pnl WHERE skip_reason IS NULL GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE ABS(sa.avg_straddle_pnl - calc.value) > 0.01",
     "symbol_aggregates.max_profit_formula": "WITH calc AS (SELECT symbol, MAX(pnl) AS value FROM straddle_pnl WHERE skip_reason IS NULL GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE ABS(sa.max_profit - calc.value) > 0.01",
     "symbol_aggregates.max_loss_formula": "WITH calc AS (SELECT symbol, MIN(pnl) AS value FROM straddle_pnl WHERE skip_reason IS NULL GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE ABS(sa.max_loss - calc.value) > 0.01",
+    "symbol_aggregates.earnings_formulas": "WITH result_windows AS (SELECT ev.symbol, ev.event_date, entry_day.trade_date AS entry_date, exit_day.trade_date AS exit_date FROM events ev JOIN LATERAL (SELECT trade_date FROM equity_historical eh WHERE eh.symbol = ev.symbol AND eh.trade_date < ev.event_date ORDER BY trade_date DESC LIMIT 1) entry_day ON TRUE JOIN LATERAL (SELECT trade_date FROM equity_historical eh WHERE eh.symbol = ev.symbol AND eh.trade_date > ev.event_date ORDER BY trade_date LIMIT 1) exit_day ON TRUE WHERE ev.event_type = 'RESULT'), result_legs AS (SELECT rw.symbol, sp_entry.underlying_close::float AS entry_underlying_close, exit_eq.close::float AS exit_underlying_close, entry_sdm.iv_30::float AS entry_iv30, exit_sdm.iv_30::float AS exit_iv30, sp_entry.total_exit::float AS entry_total, (ce_exit.close::float + pe_exit.close::float) AS exit_total FROM result_windows rw JOIN straddle_pnl sp_entry ON sp_entry.symbol = rw.symbol AND sp_entry.trade_date = rw.entry_date AND sp_entry.skip_reason IS NULL JOIN equity_historical exit_eq ON exit_eq.symbol = rw.symbol AND exit_eq.trade_date = rw.exit_date JOIN symbol_daily_metrics entry_sdm ON entry_sdm.symbol = rw.symbol AND entry_sdm.trade_date = rw.entry_date JOIN symbol_daily_metrics exit_sdm ON exit_sdm.symbol = rw.symbol AND exit_sdm.trade_date = rw.exit_date JOIN options_historical ce_exit ON ce_exit.symbol = rw.symbol AND ce_exit.trade_date = rw.exit_date AND ce_exit.expiry_date = sp_entry.expiry_date AND ce_exit.strike_price = sp_entry.atm_strike AND ce_exit.option_type = 'CE' JOIN options_historical pe_exit ON pe_exit.symbol = rw.symbol AND pe_exit.trade_date = rw.exit_date AND pe_exit.expiry_date = sp_entry.expiry_date AND pe_exit.strike_price = sp_entry.atm_strike AND pe_exit.option_type = 'PE' WHERE sp_entry.underlying_close > 0 AND sp_entry.total_exit IS NOT NULL AND ce_exit.close IS NOT NULL AND pe_exit.close IS NOT NULL), calc AS (SELECT symbol, AVG((entry_iv30 - exit_iv30) / NULLIF(entry_iv30, 0)) AS historical_iv_crush, AVG(entry_total / NULLIF(entry_underlying_close, 0)) AS implied_result_move, AVG(ABS(exit_underlying_close - entry_underlying_close) / NULLIF(entry_underlying_close, 0)) AS avg_result_move, MAX(ABS(exit_underlying_close - entry_underlying_close) / NULLIF(entry_underlying_close, 0)) AS max_result_move, AVG(entry_total - exit_total) AS avg_earnings_pnl, ROUND(100.0 * COUNT(*) FILTER (WHERE entry_total - exit_total > 0) / NULLIF(COUNT(*), 0), 2) AS earnings_win_rate, MAX(entry_total - exit_total) AS max_earnings_profit, MIN(entry_total - exit_total) AS max_earnings_loss FROM result_legs GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE COALESCE(ABS(sa.historical_iv_crush - calc.historical_iv_crush), 0) > 0.0001 OR COALESCE(ABS(sa.implied_result_move - calc.implied_result_move), 0) > 0.0001 OR COALESCE(ABS(sa.avg_result_move - calc.avg_result_move), 0) > 0.0001 OR COALESCE(ABS(sa.max_result_move - calc.max_result_move), 0) > 0.0001 OR COALESCE(ABS(sa.avg_earnings_pnl - calc.avg_earnings_pnl), 0) > 0.01 OR COALESCE(ABS(sa.earnings_win_rate - calc.earnings_win_rate), 0) > 0.01 OR COALESCE(ABS(sa.max_earnings_profit - calc.max_earnings_profit), 0) > 0.01 OR COALESCE(ABS(sa.max_earnings_loss - calc.max_earnings_loss), 0) > 0.01",
     "symbol_aggregates.earnings_range": "SELECT COUNT(*) FROM symbol_aggregates WHERE earnings_win_rate < 0 OR earnings_win_rate > 100",
 }
 
 DIAGNOSTIC_QUERIES = {
     "metrics.skew_null_reasons": """
-        WITH metric_nulls AS (
-            SELECT symbol, trade_date, expiry_30d
-            FROM symbol_daily_metrics
-            WHERE skew_25 IS NULL
-        ),
-        chain AS (
-            SELECT m.symbol, m.trade_date,
-                   COUNT(o.*) AS chain_rows,
-                   COUNT(o.*) FILTER (WHERE o.delta IS NOT NULL) AS delta_rows,
-                   COUNT(o.*) FILTER (WHERE o.option_type = 'CE' AND ABS(o.delta - 0.25) <= 0.05) AS ce_25_delta_rows,
-                   COUNT(o.*) FILTER (WHERE o.option_type = 'PE' AND ABS(o.delta + 0.25) <= 0.05) AS pe_25_delta_rows
-            FROM metric_nulls m
-            LEFT JOIN options_historical o
-              ON o.symbol = m.symbol AND o.trade_date = m.trade_date AND o.expiry_date = m.expiry_30d
-            GROUP BY m.symbol, m.trade_date
-        )
         SELECT
-            COUNT(*) AS rows,
-            COUNT(*) FILTER (WHERE chain_rows = 0) AS no_chain_rows,
-            COUNT(*) FILTER (WHERE chain_rows > 0 AND delta_rows = 0) AS no_delta_rows,
-            COUNT(*) FILTER (WHERE delta_rows > 0 AND (ce_25_delta_rows = 0 OR pe_25_delta_rows = 0)) AS no_25_delta_pair,
+            COUNT(*) FILTER (WHERE skew_20 IS NULL) AS skew20_null_rows,
+            COUNT(*) FILTER (WHERE skew_25 IS NULL) AS skew25_null_rows,
+            COUNT(*) FILTER (WHERE skew_30 IS NULL) AS skew30_null_rows,
+            COUNT(*) FILTER (WHERE smoothed_skew IS NULL) AS smoothed_skew_null_rows,
             MIN(trade_date) AS first_date,
             MAX(trade_date) AS last_date
-        FROM chain
+        FROM symbol_daily_metrics
     """,
     "metrics.large_day_over_day_moves": """
         WITH changes AS (
@@ -122,6 +110,19 @@ DIAGNOSTIC_QUERIES = {
 }
 
 
+async def _db_retry(operation, attempts: int = 3):
+    last_exc = None
+    for attempt in range(attempts):
+        try:
+            return await operation()
+        except Exception as exc:  # noqa: BLE001 - validation should survive transient DB reconnects
+            last_exc = exc
+            if attempt == attempts - 1:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
+    raise last_exc
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Validate all database tables for nulls and range/formula errors.")
     parser.add_argument("--output", default="data/validation_database.json")
@@ -140,11 +141,17 @@ async def main() -> None:
                 """
             )
         ]
+        async def fetchval(sql: str, *params):
+            return await _db_retry(lambda: repo.pool.fetchval(sql, *params))
+
+        async def fetch(sql: str, *params):
+            return await _db_retry(lambda: repo.pool.fetch(sql, *params))
+
         table_counts = {}
         nulls = {}
         for table in tables:
-            table_counts[table] = int(await repo.pool.fetchval(f"SELECT COUNT(*) FROM {table}") or 0)
-            columns = await repo.pool.fetch(
+            table_counts[table] = int(await fetchval(f"SELECT COUNT(*) FROM {table}") or 0)
+            columns = await fetch(
                 """
                 SELECT column_name, is_nullable
                 FROM information_schema.columns
@@ -157,17 +164,20 @@ async def main() -> None:
             for column in columns:
                 if column["is_nullable"] == "YES":
                     nulls[table][column["column_name"]] = int(
-                        await repo.pool.fetchval(f"SELECT COUNT(*) FROM {table} WHERE {column['column_name']} IS NULL") or 0
+                        await fetchval(f"SELECT COUNT(*) FROM {table} WHERE {column['column_name']} IS NULL") or 0
                     )
 
         range_errors = {
-            name: int(await repo.pool.fetchval(sql) or 0)
+            name: int(await fetchval(sql) or 0)
             for name, sql in RANGE_CHECKS.items()
         }
         diagnostics = {}
         for name, sql in DIAGNOSTIC_QUERIES.items():
-            rows = await repo.pool.fetch(sql)
-            diagnostics[name] = [dict(row) for row in rows]
+            try:
+                rows = await fetch(sql)
+                diagnostics[name] = [dict(row) for row in rows]
+            except Exception as exc:  # noqa: BLE001 - diagnostics must not hide hard-check results
+                diagnostics[name] = [{"diagnostic_error": f"{type(exc).__name__}: {exc}"}]
         report = {
             "table_counts": table_counts,
             "nullable_column_null_counts": nulls,
