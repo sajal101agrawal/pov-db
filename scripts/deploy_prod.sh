@@ -9,7 +9,7 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-docker compose -p pov-db -f docker-compose.prod.yml up -d --build redis
+docker compose -p pov-db -f docker-compose.prod.yml up -d postgres redis
 docker compose -p pov-db -f docker-compose.prod.yml run --rm api python scripts/apply_schema_updates.py
 docker compose -p pov-db -f docker-compose.prod.yml up -d --build api worker
 

@@ -1,4 +1,19 @@
 services:
+  postgres:
+    image: timescale/timescaledb:2.16.1-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pov
+      POSTGRES_USER: pov
+      POSTGRES_PASSWORD: pov
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pov -d pov"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -15,8 +30,11 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      DATABASE_URL: postgresql://pov:pov@postgres:5432/pov
       REDIS_URL: redis://redis:6379/0
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     ports:
@@ -28,10 +46,14 @@ services:
     env_file: .env
     command: python scripts/live_snapshot_worker.py
     environment:
+      DATABASE_URL: postgresql://pov:pov@postgres:5432/pov
       REDIS_URL: redis://redis:6379/0
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
 volumes:
+  pgdata:
   redisdata:
