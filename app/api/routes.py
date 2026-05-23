@@ -32,6 +32,83 @@ async def health(repo: MarketRepository = Depends(repository)) -> dict:
     return {"ok": True, "latest_trade_date": latest}
 
 
+@router.get("/sectors")
+async def sectors(repo: MarketRepository = Depends(repository)) -> dict:
+    rows = await repo.pool.fetch(
+        """
+        SELECT sector, array_agg(symbol ORDER BY symbol) AS symbols
+        FROM symbol_universe
+        WHERE is_active AND sector IS NOT NULL
+        GROUP BY sector
+        ORDER BY sector
+        """
+    )
+    return {"sectors": [{"sector": r["sector"], "symbols": list(r["symbols"])} for r in rows]}
+
+
+@router.get("/symbol/{symbol}/events")
+async def symbol_events(
+    symbol: str,
+    limit: int = Query(default=50, ge=1, le=500),
+    repo: MarketRepository = Depends(repository),
+) -> list[dict]:
+    rows = await repo.pool.fetch(
+        """
+        SELECT symbol, event_date, event_type, description, source
+        FROM events
+        WHERE symbol = $1
+        ORDER BY event_date DESC
+        LIMIT $2
+        """,
+        symbol.upper(),
+        limit,
+    )
+    return [dict(r) for r in rows]
+
+
+@router.get("/symbol/{symbol}/expiries")
+async def symbol_expiries(
+    symbol: str,
+    repo: MarketRepository = Depends(repository),
+) -> list[dict]:
+    rows = await repo.pool.fetch(
+        """
+        SELECT symbol, expiry_date, instrument_type, expiry_type
+        FROM expiry_calendar
+        WHERE symbol = $1
+        ORDER BY expiry_date
+        """,
+        symbol.upper(),
+    )
+    return [dict(r) for r in rows]
+
+
+@router.get("/all-dashboard")
+async def all_symbols_dashboard(repo: MarketRepository = Depends(repository)) -> list[dict]:
+    """Latest dashboard row for every active symbol — powers the main screener table."""
+    import json as _json
+    rows = await repo.pool.fetch(
+        """
+        SELECT DISTINCT ON (sdm.symbol)
+               to_jsonb(sdm.*) ||
+               COALESCE(to_jsonb(sa.*), '{}'::jsonb) ||
+               COALESCE(jsonb_build_object(
+                   'company_name', su.company_name,
+                   'sector', su.sector,
+                   'industry', su.industry,
+                   'is_nifty50', su.is_nifty50,
+                   'is_nifty100', su.is_nifty100,
+                   'symbol_type', su.symbol_type
+               ), '{}'::jsonb) AS payload
+        FROM symbol_daily_metrics sdm
+        LEFT JOIN symbol_aggregates sa USING (symbol)
+        LEFT JOIN symbol_universe su USING (symbol)
+        ORDER BY sdm.symbol, sdm.trade_date DESC
+        """
+    )
+    return [_json.loads(r["payload"]) for r in rows]
+
+
 @router.get("/symbols")
 async def symbols(repo: MarketRepository = Depends(repository)) -> list[str]:
     return await repo.active_symbols()
