@@ -211,12 +211,18 @@ async def all_symbols_dashboard(
 
     if result_date_min.strip():
         where_parts.append(f"ev_filter.event_date >= ${idx}::date")
-        params.append(result_date_min.strip())
+        try:
+            params.append(date.fromisoformat(result_date_min.strip()))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid result_date_min") from exc
         idx += 1
 
     if result_date_max.strip():
         where_parts.append(f"ev_filter.event_date <= ${idx}::date")
-        params.append(result_date_max.strip())
+        try:
+            params.append(date.fromisoformat(result_date_max.strip()))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid result_date_max") from exc
         idx += 1
 
     if sectors.strip():
@@ -265,8 +271,14 @@ async def all_symbols_dashboard(
     offset_param = idx + 1
 
     full_query = f"""
-        WITH base AS (
-            SELECT DISTINCT ON (sdm.symbol)
+        WITH latest_metrics AS (
+            SELECT DISTINCT ON (symbol) *
+            FROM symbol_daily_metrics
+            ORDER BY symbol, trade_date DESC
+        ),
+        base AS (
+            SELECT
+                   sdm.symbol AS symbol_sort,
                    to_jsonb(sdm.*) ||
                    COALESCE(to_jsonb(sa.*), '{{}}'::jsonb) ||
                    jsonb_build_object(
@@ -278,9 +290,10 @@ async def all_symbols_dashboard(
                        'symbol_type', su.symbol_type,
                        'current_price', eq.close,
                        'result_date', ev.event_date,
-                       'result_event', CASE WHEN ev.event_date IS NOT NULL THEN TRUE ELSE FALSE END
+                       'result_event', CASE WHEN ev.event_date IS NOT NULL THEN TRUE ELSE FALSE END,
+                       'upcoming_events', COALESCE(evs.upcoming_events, '[]'::jsonb)
                    ) AS payload
-            FROM symbol_daily_metrics sdm
+            FROM latest_metrics sdm
             LEFT JOIN symbol_aggregates sa USING (symbol)
             LEFT JOIN symbol_universe su USING (symbol)
             LEFT JOIN LATERAL (
@@ -292,15 +305,34 @@ async def all_symbols_dashboard(
                 WHERE symbol = sdm.symbol
                   AND event_type = 'RESULT'
                   AND event_date >= CURRENT_DATE
-                  AND event_date <= CURRENT_DATE + INTERVAL '30 days'
                 ORDER BY event_date ASC LIMIT 1
             ) ev ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT jsonb_agg(
+                    jsonb_build_object(
+                        'event_date', event_date,
+                        'event_type', event_type,
+                        'description', description,
+                        'source', source
+                    )
+                    ORDER BY event_date ASC
+                ) AS upcoming_events
+                FROM (
+                    SELECT event_date, event_type, description, source
+                    FROM events
+                    WHERE symbol = sdm.symbol
+                      AND event_type = 'RESULT'
+                      AND event_date >= CURRENT_DATE
+                    ORDER BY event_date ASC
+                    LIMIT 8
+                ) upcoming
+            ) evs ON TRUE
             {ev_filter_lateral}
             WHERE {where_clause}
-            ORDER BY sdm.symbol, sdm.trade_date DESC
         )
         SELECT payload, COUNT(*) OVER() AS total
         FROM base
+        ORDER BY symbol_sort
         LIMIT ${limit_param} OFFSET ${offset_param}
     """
 

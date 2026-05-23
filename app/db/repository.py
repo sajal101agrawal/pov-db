@@ -49,6 +49,19 @@ class MarketRepository:
         )
         return [row["symbol"] for row in rows]
 
+    async def yahoo_symbols_for(self, symbols: list[str]) -> dict[str, str | None]:
+        if not symbols:
+            return {}
+        rows = await self.pool.fetch(
+            """
+            SELECT symbol, yahoo_symbol
+            FROM symbol_universe
+            WHERE symbol = ANY($1::text[])
+            """,
+            symbols,
+        )
+        return {row["symbol"]: row["yahoo_symbol"] for row in rows}
+
     async def live_baseline(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
         if not symbols:
             return {}

@@ -16,6 +16,7 @@ from app.etl.pipeline import Pipeline
 from app.services.factory import build_bhavcopy_source
 from app.sources.nse import NSEArchiveClient
 from app.sources.nse_events import NSECorporateEventsClient
+from app.sources.yahoo_events import YahooEarningsCalendarClient
 from app.sources.nse_metadata import NSEMetadataClient
 from app.sources.rates import IndiaRiskFreeRateClient
 
@@ -167,8 +168,22 @@ async def main() -> None:
 
         if not args.skip_events:
             event_symbols = symbols or await repo.active_symbols()
-            event_rows = await NSECorporateEventsClient(settings.nse_request_delay_seconds).fetch_result_events(event_symbols)
-            emit({"event": "events_done", "symbols": len(event_symbols), "rows": await repo.upsert_events(event_rows)})
+            nse_events = await NSECorporateEventsClient(settings.nse_request_delay_seconds).fetch_result_events(
+                event_symbols
+            )
+            yahoo_symbols = await repo.yahoo_symbols_for(event_symbols)
+            yahoo_events = await YahooEarningsCalendarClient(
+                request_delay_seconds=settings.nse_request_delay_seconds
+            ).fetch_upcoming_result_events(event_symbols, yahoo_symbols)
+            emit(
+                {
+                    "event": "events_done",
+                    "symbols": len(event_symbols),
+                    "nse_rows": len(nse_events),
+                    "yahoo_rows": len(yahoo_events),
+                    "rows": await repo.upsert_events([*nse_events, *yahoo_events]),
+                }
+            )
 
         final_trade_date = await repo.latest_trade_date()
         if final_trade_date:

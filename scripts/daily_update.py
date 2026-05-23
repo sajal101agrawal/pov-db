@@ -17,6 +17,7 @@ from app.services.factory import build_bhavcopy_source
 from app.services.s3_dump import upload_etl_dump
 from app.sources.nse import NSEArchiveClient
 from app.sources.nse_events import NSECorporateEventsClient
+from app.sources.yahoo_events import YahooEarningsCalendarClient
 from app.sources.nse_metadata import NSEMetadataClient
 from app.sources.rates import IndiaRiskFreeRateClient
 
@@ -70,9 +71,14 @@ async def main() -> None:
         events_count = 0
         if not args.skip_events:
             event_symbols = symbols or active_symbols
-            events_count = await repo.upsert_events(
-                await NSECorporateEventsClient(settings.nse_request_delay_seconds).fetch_result_events(event_symbols)
+            nse_events = await NSECorporateEventsClient(settings.nse_request_delay_seconds).fetch_result_events(
+                event_symbols
             )
+            yahoo_symbols = await repo.yahoo_symbols_for(event_symbols)
+            yahoo_events = await YahooEarningsCalendarClient(
+                request_delay_seconds=settings.nse_request_delay_seconds
+            ).fetch_upcoming_result_events(event_symbols, yahoo_symbols)
+            events_count = await repo.upsert_events([*nse_events, *yahoo_events])
 
         dump_result = await asyncio.to_thread(upload_etl_dump, settings, trade_date)
 
