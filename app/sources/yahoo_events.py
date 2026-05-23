@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Any
 
 from app.sources.yahoo import yahoo_ticker
+from app.utils.retry import retry_async
 
 
 class YahooEarningsCalendarClient:
@@ -14,8 +15,17 @@ class YahooEarningsCalendarClient:
     corporate-action dates are excluded.
     """
 
-    def __init__(self, request_delay_seconds: float = 0.1) -> None:
+    def __init__(
+        self,
+        request_delay_seconds: float = 0.1,
+        retry_attempts: int = 3,
+        retry_base_delay_seconds: float = 0.75,
+        retry_max_delay_seconds: float = 8.0,
+    ) -> None:
         self.request_delay_seconds = request_delay_seconds
+        self.retry_attempts = retry_attempts
+        self.retry_base_delay_seconds = retry_base_delay_seconds
+        self.retry_max_delay_seconds = retry_max_delay_seconds
 
     async def fetch_upcoming_result_events(
         self,
@@ -29,11 +39,17 @@ class YahooEarningsCalendarClient:
         yahoo_symbols = yahoo_symbols or {}
         for symbol in symbols:
             events.extend(
-                await asyncio.to_thread(
-                    self._fetch_symbol,
-                    symbol.upper(),
-                    yahoo_symbols.get(symbol.upper()),
-                    min_date,
+                await retry_async(
+                    lambda symbol=symbol.upper(): asyncio.to_thread(
+                        self._fetch_symbol,
+                        symbol,
+                        yahoo_symbols.get(symbol),
+                        min_date,
+                    ),
+                    attempts=self.retry_attempts,
+                    base_delay_seconds=self.retry_base_delay_seconds,
+                    max_delay_seconds=self.retry_max_delay_seconds,
+                    retryable=_is_retryable_yahoo_exception,
                 )
             )
             if self.request_delay_seconds:
@@ -86,3 +102,9 @@ def _normalize_earnings_dates(raw: Any) -> list[date]:
                 result.append(value)
         return result
     return []
+
+
+def _is_retryable_yahoo_exception(exc: Exception) -> bool:
+    if isinstance(exc, (ImportError, ModuleNotFoundError, TypeError, ValueError)):
+        return False
+    return True

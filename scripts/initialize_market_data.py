@@ -173,14 +173,23 @@ async def main() -> None:
             )
             yahoo_symbols = await repo.yahoo_symbols_for(event_symbols)
             yahoo_events = await YahooEarningsCalendarClient(
-                request_delay_seconds=settings.nse_request_delay_seconds
+                request_delay_seconds=settings.nse_request_delay_seconds,
+                retry_attempts=settings.source_retry_attempts,
+                retry_base_delay_seconds=settings.source_retry_base_delay_seconds,
+                retry_max_delay_seconds=settings.source_retry_max_delay_seconds,
             ).fetch_upcoming_result_events(event_symbols, yahoo_symbols)
+            yahoo_events_deleted = await repo.delete_future_events_by_source(
+                event_symbols,
+                "yahoo:earnings-calendar",
+                date.today(),
+            )
             emit(
                 {
                     "event": "events_done",
                     "symbols": len(event_symbols),
                     "nse_rows": len(nse_events),
                     "yahoo_rows": len(yahoo_events),
+                    "yahoo_deleted": yahoo_events_deleted,
                     "rows": await repo.upsert_events([*nse_events, *yahoo_events]),
                 }
             )

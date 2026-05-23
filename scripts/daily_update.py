@@ -76,8 +76,16 @@ async def main() -> None:
             )
             yahoo_symbols = await repo.yahoo_symbols_for(event_symbols)
             yahoo_events = await YahooEarningsCalendarClient(
-                request_delay_seconds=settings.nse_request_delay_seconds
+                request_delay_seconds=settings.nse_request_delay_seconds,
+                retry_attempts=settings.source_retry_attempts,
+                retry_base_delay_seconds=settings.source_retry_base_delay_seconds,
+                retry_max_delay_seconds=settings.source_retry_max_delay_seconds,
             ).fetch_upcoming_result_events(event_symbols, yahoo_symbols)
+            yahoo_events_deleted = await repo.delete_future_events_by_source(
+                event_symbols,
+                "yahoo:earnings-calendar",
+                date.today(),
+            )
             events_count = await repo.upsert_events([*nse_events, *yahoo_events])
 
         dump_result = await asyncio.to_thread(upload_etl_dump, settings, trade_date)
@@ -89,6 +97,7 @@ async def main() -> None:
                     **result,
                     "active_symbols": len(active_symbols),
                     "metadata_upserted": metadata_count,
+                    "yahoo_events_deleted": yahoo_events_deleted if not args.skip_events else 0,
                     "events_upserted": events_count,
                     "s3_dump": dump_result,
                 },

@@ -339,6 +339,30 @@ class MarketRepository:
             )
         return len(items)
 
+    async def delete_future_events_by_source(
+        self,
+        symbols: list[str],
+        source: str,
+        min_event_date: date,
+        event_type: str = "RESULT",
+    ) -> int:
+        if not symbols:
+            return 0
+        result = await self.pool.execute(
+            """
+            DELETE FROM events
+            WHERE symbol = ANY($1::text[])
+              AND event_type = $2
+              AND source = $3
+              AND event_date >= $4
+            """,
+            symbols,
+            event_type,
+            source,
+            min_event_date,
+        )
+        return int(result.split()[-1])
+
     async def insert_live_snapshot(
         self,
         symbol: str,
