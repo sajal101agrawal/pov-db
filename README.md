@@ -46,6 +46,12 @@ Run one daily EOD update after the NSE bhavcopy is published:
 python scripts/daily_update.py --date YYYY-MM-DD
 ```
 
+Refresh only result/earnings events without running market-data ETL:
+
+```bash
+python scripts/update_result_events.py
+```
+
 Install the daily ETL cron:
 
 ```bash
@@ -61,6 +67,43 @@ scripts/export_postgres_dump.sh
 For live data, add `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` to `.env`. The worker polls
 basic Dhan quotes for all active F&O symbols during the IST market window. Full option chains
 are fetched and cached on demand through `GET /api/live/{symbol}/option-chain`.
+
+## Result Events And Upcoming Earnings
+
+Completed/filed result events come from NSE corporate-event data and are stored in `events`
+with `event_type='RESULT'` and `source='nse:event-calendar'`.
+
+Upcoming earnings dates are refreshed from Yahoo Finance's earnings calendar and stored with
+`source='yahoo:earnings-calendar'`. Only Yahoo's `Earnings Date` field is used, so dividend
+dates and other corporate actions are not stored as result events.
+
+`scripts/daily_update.py` refreshes both sources on every ETL run unless `--skip-events` is
+passed. To force only the result-event refresh on a weekend or market holiday, run:
+
+```bash
+python scripts/update_result_events.py
+```
+
+Useful server command:
+
+```bash
+docker compose -p pov-db -f docker-compose.prod.yml run --rm api python scripts/update_result_events.py
+docker compose -p pov-db -f docker-compose.prod.yml exec -T redis redis-cli FLUSHDB
+```
+
+Options:
+
+```bash
+python scripts/update_result_events.py --skip-nse
+python scripts/update_result_events.py --symbols RELIANCE,TCS,INFY --skip-nse
+```
+
+`GET /api/all-dashboard` returns upcoming result data in each row:
+
+- `result_date`: next upcoming result date.
+- `result_event`: `true` when a future result event exists.
+- `upcoming_events`: upcoming result events sorted by `event_date`, including `event_date`,
+  `event_type`, `description`, and `source`.
 
 Run tests locally:
 

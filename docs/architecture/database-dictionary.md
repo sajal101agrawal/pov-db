@@ -203,10 +203,22 @@ Current population:
 
 Purpose: corporate event calendar, mainly result dates.
 
-Current source:
+Current sources:
 
-- NSE event-calendar API.
+- NSE event-calendar API stores filed/completed result board-meeting dates with
+  `source = 'nse:event-calendar'`.
+- Yahoo Finance earnings calendar stores forward-looking planned earnings dates with
+  `source = 'yahoo:earnings-calendar'`.
 - Result events are stored as `event_type = 'RESULT'`.
+
+Operational notes:
+
+- `daily_update.py` refreshes result events unless `--skip-events` is used.
+- `update_result_events.py` refreshes only result events without running market-data ETL.
+- Future Yahoo rows are replaced on each refresh for the target symbols, so stale planned dates are
+  removed when Yahoo changes its schedule.
+- Historical earnings aggregates only materialize when surrounding equity/options data exists, so
+  future planned events do not affect completed backtest results until their market data is loaded.
 
 ### `error_log`
 

@@ -163,9 +163,19 @@ Default: weekdays at `16:30 UTC` (10:00 PM IST). Override with `CRON_TIME` if ne
 The daily job:
 
 - applies schema updates
-- runs `daily_update.py` (includes S3 dump upload + old dump pruning if `S3_DUMP_BUCKET` is set)
+- runs `daily_update.py` (includes result-event refresh, S3 dump upload, and old dump pruning if
+  `S3_DUMP_BUCKET` is set)
 - validates DB ranges/formulas
 - clears Redis dashboard cache
+
+To refresh upcoming result dates outside the weekday ETL window, run the events-only job:
+
+```bash
+docker compose -p pov-db -f docker-compose.prod.yml run --rm api python scripts/update_result_events.py
+docker compose -p pov-db -f docker-compose.prod.yml exec -T redis redis-cli FLUSHDB
+```
+
+Use `--skip-nse` for a faster Yahoo-only upcoming earnings refresh.
 
 ## Scaling Triggers
 

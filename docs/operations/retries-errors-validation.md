@@ -203,7 +203,7 @@ Use one command for a new server:
 python scripts/initialize_market_data.py --years 5 --enrich-quote
 ```
 
-This loads date-by-date NSE bhavcopy data, computes contract IV/Greeks, daily metrics and straddle PnL, populates interest rates, refreshes the active F&O universe, enriches symbol metadata from NSE, loads result events, builds the local trading calendar, refreshes percentiles/aggregates, and logs every failed date in `error_log`.
+This loads date-by-date NSE bhavcopy data, computes contract IV/Greeks, daily metrics and straddle PnL, populates interest rates, refreshes the active F&O universe, enriches symbol metadata from NSE, loads result events from NSE plus upcoming earnings from Yahoo Finance, builds the local trading calendar, refreshes percentiles/aggregates, and logs every failed date in `error_log`.
 
 For a faster first pass, omit `--enrich-quote`; company name and ISIN still come from NSE `EQUITY_L.csv`, while sector/industry coverage is lower.
 
@@ -215,7 +215,16 @@ After NSE publishes the EOD bhavcopy, run:
 python scripts/daily_update.py --date YYYY-MM-DD
 ```
 
-The daily update loads F&O and cash bhavcopy, computes metrics and PnL for that date, refreshes percentiles/aggregates, updates the calendar, refreshes symbol metadata from bulk NSE files, and loads result events unless `--skip-events` is provided.
+The daily update loads F&O and cash bhavcopy, computes metrics and PnL for that date, refreshes percentiles/aggregates, updates the calendar, refreshes symbol metadata from bulk NSE files, and loads result events unless `--skip-events` is provided. Event loading includes NSE filed result events and Yahoo Finance upcoming earnings dates. Yahoo future rows are replaced on each refresh to avoid stale planned dates.
+
+To refresh only result/earnings events without running market-data ETL, use:
+
+```bash
+python scripts/update_result_events.py
+```
+
+This is safe on weekends and holidays because it does not fetch bhavcopy or recompute analytics.
+It supports `--skip-nse`, `--skip-yahoo`, and `--symbols RELIANCE,TCS`.
 
 ## Server Scripts
 
@@ -226,6 +235,7 @@ scripts/deploy_server.sh
 scripts/setup_server.sh
 scripts/bootstrap_history.sh
 scripts/install_daily_etl_cron.sh
+python scripts/update_result_events.py
 ```
 
 Defaults:
@@ -235,6 +245,8 @@ Defaults:
 - `setup_server.sh` creates `.env` if absent, builds containers, and waits for API health.
 - `bootstrap_history.sh` runs `initialize_market_data.py --years 5`, validates the DB, clears Redis, and restarts the API.
 - `install_daily_etl_cron.sh` installs a weekday cron at `22:30` server time. It runs daily ETL, validates the DB, and clears Redis cache. Override with `CRON_TIME="45 22 * * 1-5"`.
+- `update_result_events.py` refreshes only NSE/Yahoo result events and can be run manually between
+  ETL runs. Clear Redis afterward if dashboard clients should see the new dates immediately.
 
 Docker Compose owns the multi-service deployment because a Dockerfile can only build one
 container image. The app Dockerfile builds the API/worker image; `docker-compose.yml` wires

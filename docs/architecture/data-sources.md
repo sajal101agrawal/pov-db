@@ -39,8 +39,16 @@ for bootstrap gaps and future repair jobs.
 
 ## Events
 
-Result events are loaded from NSE corporate event-calendar API and stored in `events` with
-`event_type = 'RESULT'` and `source = 'nse:event-calendar'`.
+Result events are stored in `events` with `event_type = 'RESULT'`.
+
+Sources:
+
+- NSE corporate event-calendar API with `source = 'nse:event-calendar'`.
+- Yahoo Finance earnings calendar with `source = 'yahoo:earnings-calendar'`.
+
+NSE remains the source of truth for completed/filed board-meeting result dates. Yahoo is used
+only for forward-looking scheduled earnings dates, and only the `Earnings Date` calendar field is
+ingested so dividend dates and other corporate actions are excluded.
 
 ## Active F&O Universe
 
@@ -89,15 +97,15 @@ Reference: [DhanHQ Expired Options Data](https://dhanhq.co/docs/v2/expired-optio
 Historical result events currently come from NSE corporate-event data and are loaded into
 `events` with `event_type='RESULT'`. That is the source of truth for completed/result-filed dates.
 
-For upcoming result calendars, NSE's public corporate calendar/disclosure pages do not always
-present the forward-looking schedule in the detail needed for trading workflows. The preferred
-production approach is:
+For upcoming result calendars, NSE does not consistently expose a useful forward schedule for
+every active F&O symbol. The service supplements NSE with Yahoo Finance's earnings calendar:
 
-- keep NSE/BSE filings as the authoritative source whenever exact filed disclosures are available;
-- use a structured upcoming-results feed, such as Dhan's Stock Events Calendar or another licensed
-  earnings-calendar provider, for forward scheduling;
-- store the provider name in `events.source` so historical backtests can distinguish filed events
-  from upcoming/planned events.
+- `scripts/daily_update.py` refreshes NSE and Yahoo result events unless `--skip-events` is used.
+- `scripts/update_result_events.py` refreshes only result events, which is useful on weekends and
+  market holidays when bhavcopy ETL should not run.
+- Future `yahoo:earnings-calendar` rows are deleted and reinserted on each refresh for the target
+  symbols, so changed Yahoo schedules do not leave stale planned dates behind.
+- API consumers can distinguish filed versus planned dates using `events.source`.
 
-Sensibull-style calendars are useful operationally, but they should not be treated as the only
-authoritative source unless there is a stable API/license for production ingestion.
+The dashboard exposes the next upcoming result date as `result_date` and a fuller
+`upcoming_events` array from `GET /api/all-dashboard`.
