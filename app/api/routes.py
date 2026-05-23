@@ -186,9 +186,15 @@ async def all_symbols_dashboard(
         idx += 1
 
     if symbol_type.strip():
-        where_parts.append(f"su.symbol_type = ${idx}")
-        params.append(symbol_type.strip())
-        idx += 1
+        # treat "individual_securities" and "stock" as equivalent (both refer to equity)
+        if symbol_type.strip() in ("individual_securities", "stock"):
+            where_parts.append(f"su.symbol_type IN (${idx}, ${idx + 1})")
+            params.extend(["individual_securities", "stock"])
+            idx += 2
+        else:
+            where_parts.append(f"su.symbol_type = ${idx}")
+            params.append(symbol_type.strip())
+            idx += 1
 
     if is_nifty50.strip() == "true":
         where_parts.append("su.is_nifty50 = TRUE")
