@@ -84,11 +84,15 @@ async def symbol_expiries(
 
 
 @router.get("/all-dashboard")
-async def all_symbols_dashboard(repo: MarketRepository = Depends(repository)) -> list[dict]:
-    """Latest dashboard row for every active symbol — powers the main screener table."""
+async def all_symbols_dashboard(
+    limit: int = Query(default=50, ge=1, le=200, description="Rows per page"),
+    offset: int = Query(default=0, ge=0, description="Row offset for pagination"),
+    repo: MarketRepository = Depends(repository),
+) -> dict:
+    """Latest dashboard row for every active symbol — paginated screener table."""
     import json as _json
-    rows = await repo.pool.fetch(
-        """
+
+    base_query = """
         SELECT DISTINCT ON (sdm.symbol)
                to_jsonb(sdm.*) ||
                COALESCE(to_jsonb(sa.*), '{}'::jsonb) ||
@@ -103,10 +107,30 @@ async def all_symbols_dashboard(repo: MarketRepository = Depends(repository)) ->
         FROM symbol_daily_metrics sdm
         LEFT JOIN symbol_aggregates sa USING (symbol)
         LEFT JOIN symbol_universe su USING (symbol)
+        WHERE su.is_active = TRUE OR su.is_active IS NULL
         ORDER BY sdm.symbol, sdm.trade_date DESC
-        """
+    """
+
+    # Total count (fast — counts distinct symbols)
+    count_row = await repo.pool.fetchrow(
+        "SELECT COUNT(DISTINCT sdm.symbol) AS total "
+        "FROM symbol_daily_metrics sdm "
+        "LEFT JOIN symbol_universe su USING (symbol) "
+        "WHERE su.is_active = TRUE OR su.is_active IS NULL"
     )
-    return [_json.loads(r["payload"]) for r in rows]
+    total = count_row["total"] if count_row else 0
+
+    rows = await repo.pool.fetch(
+        f"SELECT payload FROM ({base_query}) AS sub LIMIT $1 OFFSET $2",
+        limit,
+        offset,
+    )
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "data": [_json.loads(r["payload"]) for r in rows],
+    }
 
 
 @router.get("/symbol/{symbol}/volatility-cone")
