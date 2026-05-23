@@ -812,9 +812,26 @@ class MarketRepository:
     async def history(self, symbol: str, days: int) -> list[dict[str, Any]]:
         rows = await self.pool.fetch(
             """
-            SELECT trade_date, iv_30::float, iv_60::float, iv_90::float,
-                   rv_30::float, rv_60::float, rv_90::float,
-                   vrp::float, skew_25::float, fwdv_3060::float
+            SELECT trade_date,
+                   -- Implied volatility term structure
+                   iv_30::float, iv_60::float, iv_90::float,
+                   -- Realized volatility (all windows)
+                   rv_10::float, rv_20::float, rv_30::float, rv_60::float, rv_90::float,
+                   -- Variance risk premium
+                   vrp::float,
+                   -- Forward volatility
+                   fwdv_3060::float, fev_30::float,
+                   -- Skew (all delta levels)
+                   skew_20::float, skew_25::float, skew_30::float, smoothed_skew::float,
+                   -- IV/RV and IV/FEV ratios
+                   iv30_rv30_ratio::float, iv30_fev30_ratio::float,
+                   -- RSI
+                   daily_rsi::float, weekly_rsi::float,
+                   -- Percentiles / ranks
+                   iv_30_percentile::float, iv_60_percentile::float, iv_90_percentile::float,
+                   vrp_percentile::float, skew_percentile::float, skew_rank,
+                   -- Volume
+                   avg_option_volume::float
             FROM symbol_daily_metrics
             WHERE symbol = $1
             ORDER BY trade_date DESC
