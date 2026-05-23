@@ -133,7 +133,7 @@ FILTERABLE_NUMERIC = {
     "nearest_pe_iv":     "sdm.nearest_pe_iv",
     "iv30_rv30_ratio":   "sdm.iv30_rv30_ratio",
     "iv30_fev30_ratio":  "sdm.iv30_fev30_ratio",
-    "avg_option_volume": "sa.avg_option_volume",
+    "avg_option_volume": "sdm.avg_option_volume",
     "avg_straddle_pnl":  "sa.avg_straddle_pnl",
     "vrp_win_rate":      "sa.vrp_win_rate",
     "avg_vrp_4y":        "sa.avg_vrp_4y",
