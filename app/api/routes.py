@@ -218,6 +218,10 @@ async def symbol_volatility_cone(
     Returns min/p10/p25/median/p75/p90/max for rv_10, rv_20, rv_30, rv_60, rv_90,
     plus the current (latest) realized vol for each window.
     """
+    cache_key = f"vol_cone:{symbol.upper()}:{lookback_days}"
+    cached = await cache_service.get_json(cache_key)
+    if cached is not None:
+        return cached
     rows = await repo.pool.fetch(
         """
         WITH history AS (
@@ -308,7 +312,7 @@ async def symbol_volatility_cone(
             "current": float(latest[prefix.replace("rv", "rv_")]) if latest and latest[prefix.replace("rv", "rv_")] is not None else None,
         }
 
-    return {
+    result = {
         "symbol": symbol.upper(),
         "sample_count": r["sample_count"],
         "lookback_days": lookback_days,
@@ -321,6 +325,8 @@ async def symbol_volatility_cone(
             "rv_90": _window("rv90"),
         },
     }
+    await cache_service.set_json(cache_key, result)
+    return result
 
 
 @router.get("/symbol/{symbol}/term-structure")
@@ -328,11 +334,16 @@ async def symbol_term_structure(
     symbol: str,
     days: int = Query(default=252, ge=1, le=2000, description="Days of historical term structure to return"),
     repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
 ) -> dict:
     """
     IV term structure — current snapshot + historical time-series.
     Returns the 30/60/90d IV with DTE and expiry dates for each trade date.
     """
+    cache_key = f"term_structure:{symbol.upper()}:{days}"
+    cached = await cache_service.get_json(cache_key)
+    if cached is not None:
+        return cached
     rows = await repo.pool.fetch(
         """
         SELECT trade_date,
@@ -352,23 +363,30 @@ async def symbol_term_structure(
     series = [dict(r) for r in reversed(rows)]
     current = series[-1] if series else None
 
-    return {
+    result = {
         "symbol": symbol.upper(),
         "current": current,
         "history": series,
     }
+    await cache_service.set_json(cache_key, result)
+    return result
 
 
 @router.get("/symbol/{symbol}/result-moves")
 async def symbol_result_moves(
     symbol: str,
     repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
 ) -> dict:
     """
     Per-event result move history.
     Each row is one earnings/result event with: implied move (IV-based), actual underlying move,
     IV crush, and straddle P&L.
     """
+    cache_key = f"result_moves:{symbol.upper()}"
+    cached = await cache_service.get_json(cache_key)
+    if cached is not None:
+        return cached
     rows = await repo.pool.fetch(
         """
         SELECT
@@ -442,11 +460,13 @@ async def symbol_result_moves(
         symbol.upper(),
     )
 
-    return {
+    result = {
         "symbol": symbol.upper(),
         "summary": dict(summary) if summary else {},
         "events": events_data,
     }
+    await cache_service.set_json(cache_key, result)
+    return result
 
 
 @router.get("/symbol/{symbol}/option-chain-history")
@@ -514,8 +534,16 @@ async def symbol_option_chain_history(
 
 
 @router.get("/symbols")
-async def symbols(repo: MarketRepository = Depends(repository)) -> list[str]:
-    return await repo.active_symbols()
+async def symbols(
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> list[str]:
+    cached = await cache_service.get_json("symbols:list")
+    if cached is not None:
+        return cached
+    result = await repo.active_symbols()
+    await cache_service.set_json("symbols:list", result)
+    return result
 
 
 @router.get("/symbol/{symbol}")
@@ -539,8 +567,15 @@ async def symbol_history(
     symbol: str,
     days: int = Query(default=365, ge=1, le=2000),
     repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
 ) -> list[dict]:
-    return await repo.history(symbol, days)
+    cache_key = f"history:{symbol.upper()}:{days}"
+    cached = await cache_service.get_json(cache_key)
+    if cached is not None:
+        return cached
+    result = await repo.history(symbol, days)
+    await cache_service.set_json(cache_key, result)
+    return result
 
 
 @router.get("/symbol/{symbol}/pnl")
@@ -548,8 +583,15 @@ async def symbol_pnl(
     symbol: str,
     days: int = Query(default=365, ge=1, le=2000),
     repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
 ) -> list[dict]:
-    return await repo.straddle_history(symbol, days)
+    cache_key = f"pnl:{symbol.upper()}:{days}"
+    cached = await cache_service.get_json(cache_key)
+    if cached is not None:
+        return cached
+    result = await repo.straddle_history(symbol, days)
+    await cache_service.set_json(cache_key, result)
+    return result
 
 
 @router.get("/live/{symbol}")
