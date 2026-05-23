@@ -105,103 +105,210 @@ async def symbol_expiries(
     return result
 
 
+FILTERABLE_NUMERIC = {
+    "vrp":               "sdm.vrp",
+    "iv_30":             "sdm.iv_30",
+    "iv_60":             "sdm.iv_60",
+    "iv_90":             "sdm.iv_90",
+    "iv_30_percentile":  "sdm.iv_30_percentile",
+    "iv_60_percentile":  "sdm.iv_60_percentile",
+    "iv_90_percentile":  "sdm.iv_90_percentile",
+    "fwdv_3060":         "sdm.fwdv_3060",
+    "fwdfct_3060":       "sdm.fwdfct_3060",
+    "iv_slope_3060":     "sdm.iv_slope_3060",
+    "rv_10":             "sdm.rv_10",
+    "rv_20":             "sdm.rv_20",
+    "rv_30":             "sdm.rv_30",
+    "fev_30":            "sdm.fev_30",
+    "smoothed_skew":     "sdm.smoothed_skew",
+    "skew_percentile":   "sdm.skew_percentile",
+    "skew_rank":         "sdm.skew_rank",
+    "historical_iv_crush": "sdm.historical_iv_crush",
+    "implied_result_move": "sdm.implied_result_move",
+    "avg_result_move":   "sa.avg_result_move",
+    "max_result_move":   "sa.max_result_move",
+    "daily_rsi":         "sdm.daily_rsi",
+    "weekly_rsi":        "sdm.weekly_rsi",
+    "nearest_ce_iv":     "sdm.nearest_ce_iv",
+    "nearest_pe_iv":     "sdm.nearest_pe_iv",
+    "iv30_rv30_ratio":   "sdm.iv30_rv30_ratio",
+    "iv30_fev30_ratio":  "sdm.iv30_fev30_ratio",
+    "avg_option_volume": "sa.avg_option_volume",
+    "avg_straddle_pnl":  "sa.avg_straddle_pnl",
+    "vrp_win_rate":      "sa.vrp_win_rate",
+    "avg_vrp_4y":        "sa.avg_vrp_4y",
+    "max_loss":          "sa.max_loss",
+    "max_profit":        "sa.max_profit",
+    "current_price":     "eq.close",
+}
+
+
 @router.get("/all-dashboard")
 async def all_symbols_dashboard(
     limit: int = Query(default=50, ge=1, le=200, description="Rows per page"),
     offset: int = Query(default=0, ge=0, description="Row offset for pagination"),
-    search: str = Query(default="", description="Filter by symbol or company name (case-insensitive)"),
+    search: str = Query(default="", description="Filter by symbol or company name"),
+    symbol_type: str = Query(default=""),
+    is_nifty50: str = Query(default=""),
+    is_nifty100: str = Query(default=""),
+    has_result: str = Query(default=""),
+    result_date_min: str = Query(default=""),
+    result_date_max: str = Query(default=""),
+    sectors: str = Query(default=""),
+    numeric_filters: str = Query(default=""),
     repo: MarketRepository = Depends(repository),
     cache_service: CacheService = Depends(cache),
 ) -> dict:
     """Latest dashboard row for every active symbol — paginated screener table."""
     import json as _json
 
-    # Cache only unfiltered pages (search=="" so results are stable)
-    if not search.strip():
+    has_any_filter = any([
+        search.strip(), symbol_type.strip(), is_nifty50.strip(), is_nifty100.strip(),
+        has_result.strip(), result_date_min.strip(), result_date_max.strip(),
+        sectors.strip(), numeric_filters.strip(),
+    ])
+
+    # Cache only plain unfiltered pages
+    if not has_any_filter:
         cache_key = f"all_dashboard:{limit}:{offset}"
         cached = await cache_service.get_json(cache_key)
         if cached is not None:
             return cached
 
-    search_filter = "AND (sdm.symbol ILIKE $3 OR su.company_name ILIKE $3)" if search.strip() else ""
-    search_param = f"%{search.strip()}%" if search.strip() else None
+    # Build dynamic WHERE conditions
+    where_parts: list[str] = ["(su.is_active = TRUE OR su.is_active IS NULL)"]
+    params: list = []
+    idx = 1  # asyncpg uses $1, $2, ...
 
-    base_query = f"""
-        SELECT DISTINCT ON (sdm.symbol)
-               to_jsonb(sdm.*) ||
-               COALESCE(to_jsonb(sa.*), '{{}}'::jsonb) ||
-               COALESCE(jsonb_build_object(
-                   'company_name', su.company_name,
-                   'sector', su.sector,
-                   'industry', su.industry,
-                   'is_nifty50', su.is_nifty50,
-                   'is_nifty100', su.is_nifty100,
-                   'symbol_type', su.symbol_type,
-                   'current_price', eq.close,
-                   'result_date', ev.event_date,
-                   'result_event', CASE WHEN ev.event_date IS NOT NULL THEN TRUE ELSE FALSE END
-               ), '{{}}'::jsonb) AS payload
-        FROM symbol_daily_metrics sdm
-        LEFT JOIN symbol_aggregates sa USING (symbol)
-        LEFT JOIN symbol_universe su USING (symbol)
-        LEFT JOIN LATERAL (
-            SELECT close
-            FROM equity_historical
-            WHERE symbol = sdm.symbol
-            ORDER BY trade_date DESC
-            LIMIT 1
-        ) eq ON TRUE
+    if search.strip():
+        where_parts.append(f"(sdm.symbol ILIKE ${idx} OR su.company_name ILIKE ${idx})")
+        params.append(f"%{search.strip()}%")
+        idx += 1
+
+    if symbol_type.strip():
+        where_parts.append(f"su.symbol_type = ${idx}")
+        params.append(symbol_type.strip())
+        idx += 1
+
+    if is_nifty50.strip() == "true":
+        where_parts.append("su.is_nifty50 = TRUE")
+
+    if is_nifty100.strip() == "true":
+        where_parts.append("su.is_nifty100 = TRUE")
+
+    needs_ev_filter = has_result.strip() or result_date_min.strip() or result_date_max.strip()
+
+    if has_result.strip() == "yes":
+        where_parts.append("ev_filter.event_date IS NOT NULL")
+    elif has_result.strip() == "no":
+        where_parts.append("ev_filter.event_date IS NULL")
+
+    if result_date_min.strip():
+        where_parts.append(f"ev_filter.event_date >= ${idx}::date")
+        params.append(result_date_min.strip())
+        idx += 1
+
+    if result_date_max.strip():
+        where_parts.append(f"ev_filter.event_date <= ${idx}::date")
+        params.append(result_date_max.strip())
+        idx += 1
+
+    if sectors.strip():
+        sector_list = [s.strip() for s in sectors.split(",") if s.strip()]
+        if sector_list:
+            placeholders = ", ".join(f"${idx + i}" for i in range(len(sector_list)))
+            where_parts.append(f"su.sector IN ({placeholders})")
+            params.extend(sector_list)
+            idx += len(sector_list)
+
+    if numeric_filters.strip():
+        try:
+            nf = _json.loads(numeric_filters)
+            for field, bounds in nf.items():
+                col = FILTERABLE_NUMERIC.get(field)
+                if col is None:
+                    continue
+                if isinstance(bounds, dict):
+                    if bounds.get("min") is not None:
+                        where_parts.append(f"{col} >= ${idx}")
+                        params.append(float(bounds["min"]))
+                        idx += 1
+                    if bounds.get("max") is not None:
+                        where_parts.append(f"{col} <= ${idx}")
+                        params.append(float(bounds["max"]))
+                        idx += 1
+        except Exception:
+            pass
+
+    where_clause = " AND ".join(where_parts)
+
+    ev_filter_lateral = ""
+    if needs_ev_filter:
+        ev_filter_lateral = """
         LEFT JOIN LATERAL (
             SELECT event_date
             FROM events
             WHERE symbol = sdm.symbol
               AND event_type = 'RESULT'
               AND event_date >= CURRENT_DATE
-              AND event_date <= CURRENT_DATE + INTERVAL '30 days'
             ORDER BY event_date ASC
             LIMIT 1
-        ) ev ON TRUE
-        WHERE (su.is_active = TRUE OR su.is_active IS NULL)
-        {search_filter}
-        ORDER BY sdm.symbol, sdm.trade_date DESC
+        ) ev_filter ON TRUE"""
+
+    limit_param = idx
+    offset_param = idx + 1
+
+    full_query = f"""
+        WITH base AS (
+            SELECT DISTINCT ON (sdm.symbol)
+                   to_jsonb(sdm.*) ||
+                   COALESCE(to_jsonb(sa.*), '{{}}'::jsonb) ||
+                   jsonb_build_object(
+                       'company_name', su.company_name,
+                       'sector', su.sector,
+                       'industry', su.industry,
+                       'is_nifty50', su.is_nifty50,
+                       'is_nifty100', su.is_nifty100,
+                       'symbol_type', su.symbol_type,
+                       'current_price', eq.close,
+                       'result_date', ev.event_date,
+                       'result_event', CASE WHEN ev.event_date IS NOT NULL THEN TRUE ELSE FALSE END
+                   ) AS payload
+            FROM symbol_daily_metrics sdm
+            LEFT JOIN symbol_aggregates sa USING (symbol)
+            LEFT JOIN symbol_universe su USING (symbol)
+            LEFT JOIN LATERAL (
+                SELECT close FROM equity_historical
+                WHERE symbol = sdm.symbol ORDER BY trade_date DESC LIMIT 1
+            ) eq ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT event_date FROM events
+                WHERE symbol = sdm.symbol
+                  AND event_type = 'RESULT'
+                  AND event_date >= CURRENT_DATE
+                  AND event_date <= CURRENT_DATE + INTERVAL '30 days'
+                ORDER BY event_date ASC LIMIT 1
+            ) ev ON TRUE
+            {ev_filter_lateral}
+            WHERE {where_clause}
+            ORDER BY sdm.symbol, sdm.trade_date DESC
+        )
+        SELECT payload, COUNT(*) OVER() AS total
+        FROM base
+        LIMIT ${limit_param} OFFSET ${offset_param}
     """
 
-    count_where = "WHERE (su.is_active = TRUE OR su.is_active IS NULL)"
-    if search_param:
-        count_where += " AND (sdm.symbol ILIKE $1 OR su.company_name ILIKE $1)"
+    all_params = params + [limit, offset]
+    rows = await repo.pool.fetch(full_query, *all_params)
 
-    if search_param:
-        count_row = await repo.pool.fetchrow(
-            f"SELECT COUNT(DISTINCT sdm.symbol) AS total "
-            f"FROM symbol_daily_metrics sdm "
-            f"LEFT JOIN symbol_universe su USING (symbol) "
-            f"{count_where}",
-            search_param,
-        )
-        rows = await repo.pool.fetch(
-            f"SELECT payload FROM ({base_query}) AS sub LIMIT $1 OFFSET $2",
-            limit, offset, search_param,
-        )
-    else:
-        count_row = await repo.pool.fetchrow(
-            f"SELECT COUNT(DISTINCT sdm.symbol) AS total "
-            f"FROM symbol_daily_metrics sdm "
-            f"LEFT JOIN symbol_universe su USING (symbol) "
-            f"{count_where}",
-        )
-        rows = await repo.pool.fetch(
-            f"SELECT payload FROM ({base_query}) AS sub LIMIT $1 OFFSET $2",
-            limit, offset,
-        )
-
-    total = count_row["total"] if count_row else 0
+    total = rows[0]["total"] if rows else 0
     result = {
-        "total": total,
+        "total": int(total),
         "limit": limit,
         "offset": offset,
         "data": [_json.loads(r["payload"]) for r in rows],
     }
-    if not search.strip():
+    if not has_any_filter:
         await cache_service.set_json(f"all_dashboard:{limit}:{offset}", result)
     return result
 
