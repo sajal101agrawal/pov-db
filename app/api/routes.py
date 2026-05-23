@@ -87,44 +87,84 @@ async def symbol_expiries(
 async def all_symbols_dashboard(
     limit: int = Query(default=50, ge=1, le=200, description="Rows per page"),
     offset: int = Query(default=0, ge=0, description="Row offset for pagination"),
+    search: str = Query(default="", description="Filter by symbol or company name (case-insensitive)"),
     repo: MarketRepository = Depends(repository),
 ) -> dict:
     """Latest dashboard row for every active symbol — paginated screener table."""
     import json as _json
 
-    base_query = """
+    search_filter = "AND (sdm.symbol ILIKE $3 OR su.company_name ILIKE $3)" if search.strip() else ""
+    search_param = f"%{search.strip()}%" if search.strip() else None
+
+    base_query = f"""
         SELECT DISTINCT ON (sdm.symbol)
                to_jsonb(sdm.*) ||
-               COALESCE(to_jsonb(sa.*), '{}'::jsonb) ||
+               COALESCE(to_jsonb(sa.*), '{{}}'::jsonb) ||
                COALESCE(jsonb_build_object(
                    'company_name', su.company_name,
                    'sector', su.sector,
                    'industry', su.industry,
                    'is_nifty50', su.is_nifty50,
                    'is_nifty100', su.is_nifty100,
-                   'symbol_type', su.symbol_type
-               ), '{}'::jsonb) AS payload
+                   'symbol_type', su.symbol_type,
+                   'current_price', eq.close,
+                   'result_date', ev.event_date,
+                   'result_event', CASE WHEN ev.event_date IS NOT NULL THEN TRUE ELSE FALSE END
+               ), '{{}}'::jsonb) AS payload
         FROM symbol_daily_metrics sdm
         LEFT JOIN symbol_aggregates sa USING (symbol)
         LEFT JOIN symbol_universe su USING (symbol)
-        WHERE su.is_active = TRUE OR su.is_active IS NULL
+        LEFT JOIN LATERAL (
+            SELECT close
+            FROM equity_historical
+            WHERE symbol = sdm.symbol
+            ORDER BY trade_date DESC
+            LIMIT 1
+        ) eq ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT event_date
+            FROM events
+            WHERE symbol = sdm.symbol
+              AND event_type = 'RESULT'
+              AND event_date >= CURRENT_DATE
+              AND event_date <= CURRENT_DATE + INTERVAL '30 days'
+            ORDER BY event_date ASC
+            LIMIT 1
+        ) ev ON TRUE
+        WHERE (su.is_active = TRUE OR su.is_active IS NULL)
+        {search_filter}
         ORDER BY sdm.symbol, sdm.trade_date DESC
     """
 
-    # Total count (fast — counts distinct symbols)
-    count_row = await repo.pool.fetchrow(
-        "SELECT COUNT(DISTINCT sdm.symbol) AS total "
-        "FROM symbol_daily_metrics sdm "
-        "LEFT JOIN symbol_universe su USING (symbol) "
-        "WHERE su.is_active = TRUE OR su.is_active IS NULL"
-    )
-    total = count_row["total"] if count_row else 0
+    count_where = "WHERE (su.is_active = TRUE OR su.is_active IS NULL)"
+    if search_param:
+        count_where += " AND (sdm.symbol ILIKE $1 OR su.company_name ILIKE $1)"
 
-    rows = await repo.pool.fetch(
-        f"SELECT payload FROM ({base_query}) AS sub LIMIT $1 OFFSET $2",
-        limit,
-        offset,
-    )
+    if search_param:
+        count_row = await repo.pool.fetchrow(
+            f"SELECT COUNT(DISTINCT sdm.symbol) AS total "
+            f"FROM symbol_daily_metrics sdm "
+            f"LEFT JOIN symbol_universe su USING (symbol) "
+            f"{count_where}",
+            search_param,
+        )
+        rows = await repo.pool.fetch(
+            f"SELECT payload FROM ({base_query}) AS sub LIMIT $1 OFFSET $2",
+            limit, offset, search_param,
+        )
+    else:
+        count_row = await repo.pool.fetchrow(
+            f"SELECT COUNT(DISTINCT sdm.symbol) AS total "
+            f"FROM symbol_daily_metrics sdm "
+            f"LEFT JOIN symbol_universe su USING (symbol) "
+            f"{count_where}",
+        )
+        rows = await repo.pool.fetch(
+            f"SELECT payload FROM ({base_query}) AS sub LIMIT $1 OFFSET $2",
+            limit, offset,
+        )
+
+    total = count_row["total"] if count_row else 0
     return {
         "total": total,
         "limit": limit,
