@@ -21,6 +21,17 @@ class CacheService:
     def __init__(self, redis: Redis) -> None:
         self.redis = redis
 
+    # ── Generic helpers ───────────────────────────────────────────────────────
+
+    async def get_json(self, key: str) -> dict | list | None:
+        raw = await self.redis.get(key)
+        return json.loads(raw) if raw else None
+
+    async def set_json(self, key: str, payload: dict | list, ex: int | None = None) -> None:
+        await self.redis.set(key, json.dumps(payload, default=str), ex=ex or seconds_until_midnight_ist())
+
+    # ── Per-symbol dashboard ─────────────���──────────────────────────────���─────
+
     async def get_dashboard(self, symbol: str) -> dict | None:
         raw = await self.redis.get(f"dashboard:{symbol.upper()}")
         return json.loads(raw) if raw else None

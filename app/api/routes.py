@@ -33,7 +33,13 @@ async def health(repo: MarketRepository = Depends(repository)) -> dict:
 
 
 @router.get("/sectors")
-async def sectors(repo: MarketRepository = Depends(repository)) -> dict:
+async def sectors(
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> dict:
+    cached = await cache_service.get_json("sectors:list")
+    if cached is not None:
+        return cached
     rows = await repo.pool.fetch(
         """
         SELECT sector, array_agg(symbol ORDER BY symbol) AS symbols
@@ -43,7 +49,9 @@ async def sectors(repo: MarketRepository = Depends(repository)) -> dict:
         ORDER BY sector
         """
     )
-    return {"sectors": [{"sector": r["sector"], "symbols": list(r["symbols"])} for r in rows]}
+    result = {"sectors": [{"sector": r["sector"], "symbols": list(r["symbols"])} for r in rows]}
+    await cache_service.set_json("sectors:list", result)
+    return result
 
 
 @router.get("/symbol/{symbol}/events")
@@ -51,7 +59,12 @@ async def symbol_events(
     symbol: str,
     limit: int = Query(default=50, ge=1, le=500),
     repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
 ) -> list[dict]:
+    cache_key = f"events:{symbol.upper()}:{limit}"
+    cached = await cache_service.get_json(cache_key)
+    if cached is not None:
+        return cached
     rows = await repo.pool.fetch(
         """
         SELECT symbol, event_date, event_type, description, source
@@ -63,14 +76,21 @@ async def symbol_events(
         symbol.upper(),
         limit,
     )
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    await cache_service.set_json(cache_key, result)
+    return result
 
 
 @router.get("/symbol/{symbol}/expiries")
 async def symbol_expiries(
     symbol: str,
     repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
 ) -> list[dict]:
+    cache_key = f"expiries:{symbol.upper()}"
+    cached = await cache_service.get_json(cache_key)
+    if cached is not None:
+        return cached
     rows = await repo.pool.fetch(
         """
         SELECT symbol, expiry_date, instrument_type, expiry_type
@@ -80,7 +100,9 @@ async def symbol_expiries(
         """,
         symbol.upper(),
     )
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    await cache_service.set_json(cache_key, result)
+    return result
 
 
 @router.get("/all-dashboard")
@@ -89,9 +111,17 @@ async def all_symbols_dashboard(
     offset: int = Query(default=0, ge=0, description="Row offset for pagination"),
     search: str = Query(default="", description="Filter by symbol or company name (case-insensitive)"),
     repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
 ) -> dict:
     """Latest dashboard row for every active symbol — paginated screener table."""
     import json as _json
+
+    # Cache only unfiltered pages (search=="" so results are stable)
+    if not search.strip():
+        cache_key = f"all_dashboard:{limit}:{offset}"
+        cached = await cache_service.get_json(cache_key)
+        if cached is not None:
+            return cached
 
     search_filter = "AND (sdm.symbol ILIKE $3 OR su.company_name ILIKE $3)" if search.strip() else ""
     search_param = f"%{search.strip()}%" if search.strip() else None
@@ -165,12 +195,15 @@ async def all_symbols_dashboard(
         )
 
     total = count_row["total"] if count_row else 0
-    return {
+    result = {
         "total": total,
         "limit": limit,
         "offset": offset,
         "data": [_json.loads(r["payload"]) for r in rows],
     }
+    if not search.strip():
+        await cache_service.set_json(f"all_dashboard:{limit}:{offset}", result)
+    return result
 
 
 @router.get("/symbol/{symbol}/volatility-cone")
@@ -178,6 +211,7 @@ async def symbol_volatility_cone(
     symbol: str,
     lookback_days: int = Query(default=504, ge=60, le=2000, description="Trading days of history for cone calculation"),
     repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
 ) -> dict:
     """
     Volatility cone — historical RV percentile bands for each time window.
