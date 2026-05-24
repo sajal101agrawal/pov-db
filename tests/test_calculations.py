@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from datetime import date
 
-from app.etl.pipeline import _expiry_closest_to_target, _monthly_expiry_buckets
+from app.etl.pipeline import _expiry_closest_to_target, _monthly_expiry_buckets, _total_option_volume
 
 from app.services.calculations import (
     atm_iv,
@@ -89,6 +89,17 @@ def test_monthly_expiry_buckets_collapse_index_weeklies() -> None:
 def test_closest_target_expiry_helper() -> None:
     expiries = [date(2026, 5, 26), date(2026, 6, 30), date(2026, 7, 28)]
     assert _expiry_closest_to_target(expiries, date(2026, 5, 20), 30) == date(2026, 6, 30)
+
+
+def test_total_option_volume_sums_calls_and_puts_across_strikes() -> None:
+    chain = [
+        {"strike_price": 100, "option_type": "CE", "num_contracts": 10},
+        {"strike_price": 100, "option_type": "PE", "num_contracts": 20},
+        {"strike_price": 110, "option_type": "CE", "num_contracts": 30},
+        {"strike_price": 110, "option_type": "PE", "num_contracts": 40},
+        {"strike_price": 120, "option_type": "CE", "num_contracts": None},
+    ]
+    assert _total_option_volume(chain) == 100
 
 
 def test_skew_and_smoothed_skew() -> None:

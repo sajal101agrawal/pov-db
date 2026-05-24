@@ -249,7 +249,7 @@ class Pipeline:
             "smoothed_skew": smoothed_skew(skew20, skew25, skew30),
             "iv30_rv30_ratio": ratio(iv30, rv30),
             "iv30_fev30_ratio": ratio(iv30, fwdv),
-            "avg_option_volume": _average([r.get("num_contracts") for r in chain]),
+            "avg_option_volume": _total_option_volume(chain),
             "daily_rsi": rsi(closes, 14),
             "weekly_rsi": rsi(_weekly_closes(ohlc), 14),
         }
@@ -398,9 +398,13 @@ def _weekly_closes(ohlc: list[dict[str, Any]]) -> list[float]:
     return list(weekly.values())
 
 
-def _average(values) -> float | None:
-    clean = [float(v) for v in values if v is not None]
-    return sum(clean) / len(clean) if clean else None
+def _total_option_volume(chain: list[dict[str, Any]]) -> float | None:
+    volumes = [
+        float(row["num_contracts"])
+        for row in chain
+        if row.get("option_type") in {"CE", "PE"} and row.get("num_contracts") is not None
+    ]
+    return sum(volumes) if volumes else None
 
 
 def _analytics_iv(value: float | None) -> float | None:

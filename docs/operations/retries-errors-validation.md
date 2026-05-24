@@ -217,6 +217,14 @@ python scripts/daily_update.py --date YYYY-MM-DD
 
 The daily update loads F&O and cash bhavcopy, computes metrics and PnL for that date, refreshes percentiles/aggregates, updates the calendar, refreshes symbol metadata from bulk NSE files, and loads result events unless `--skip-events` is provided. Event loading includes NSE filed result events and Yahoo Finance upcoming earnings dates. Yahoo future rows are replaced on each refresh to avoid stale planned dates.
 
+`symbol_daily_metrics.avg_option_volume` is recomputed during daily ETL as total traded option
+contracts for the symbol/date, summed across all CE and PE contracts in `options_historical`.
+To repair this field without running full analytics, use:
+
+```bash
+python scripts/recompute_option_volume.py --start YYYY-MM-DD --end YYYY-MM-DD
+```
+
 To refresh only result/earnings events without running market-data ETL, use:
 
 ```bash
@@ -235,6 +243,7 @@ scripts/deploy_server.sh
 scripts/setup_server.sh
 scripts/bootstrap_history.sh
 scripts/install_daily_etl_cron.sh
+python scripts/recompute_option_volume.py
 python scripts/update_result_events.py
 ```
 
@@ -245,6 +254,8 @@ Defaults:
 - `setup_server.sh` creates `.env` if absent, builds containers, and waits for API health.
 - `bootstrap_history.sh` runs `initialize_market_data.py --years 5`, validates the DB, clears Redis, and restarts the API.
 - `install_daily_etl_cron.sh` installs a weekday cron at `22:30` server time. It runs daily ETL, validates the DB, and clears Redis cache. Override with `CRON_TIME="45 22 * * 1-5"`.
+- `recompute_option_volume.py` repairs `avg_option_volume` from raw option rows without rerunning
+  IV/Greeks or straddle analytics.
 - `update_result_events.py` refreshes only NSE/Yahoo result events and can be run manually between
   ETL runs. Clear Redis afterward if dashboard clients should see the new dates immediately.
 

@@ -92,6 +92,8 @@ Important columns:
 - `fwdfct_3060`: `(iv_30 / fwdv_3060) - 1`.
 - `iv_slope_3060`: `(iv_60 - iv_30) / 30`.
 - `skew_20/25/30`: put IV minus call IV at the closest target deltas.
+- `avg_option_volume`: total traded option contracts for the symbol/date, summed across all
+  CE and PE contracts in `options_historical`.
 - `daily_rsi/weekly_rsi`: RSI on `0..100`.
 - Percentile fields: `0..100`.
 
