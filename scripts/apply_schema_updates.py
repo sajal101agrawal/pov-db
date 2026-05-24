@@ -16,6 +16,7 @@ STATEMENTS = [
     "ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS earnings_win_rate NUMERIC(6,2)",
     "ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS max_earnings_profit NUMERIC(12,4)",
     "ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS max_earnings_loss NUMERIC(12,4)",
+    "ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS avg_straddle_pnl_pct NUMERIC(10,6)",
 ]
 
 

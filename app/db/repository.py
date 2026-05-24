@@ -679,6 +679,7 @@ class MarketRepository:
                     sp.symbol,
                     ROUND(100.0 * COUNT(*) FILTER (WHERE sp.is_winner) / NULLIF(COUNT(*), 0), 2) AS win_rate,
                     AVG(sp.pnl) AS avg_straddle_pnl,
+                    AVG(sp.pnl / NULLIF(sp.total_entry, 0)) AS avg_straddle_pnl_pct,
                     AVG(sp.call_entry - sp.call_exit) AS avg_call_pnl,
                     AVG(sp.put_entry - sp.put_exit) AS avg_put_pnl,
                     MAX(sp.pnl) AS max_profit,
@@ -775,8 +776,8 @@ class MarketRepository:
             )
             INSERT INTO symbol_aggregates (
                 symbol, win_rate, vrp_win_rate, avg_vrp_4y, avg_straddle_pnl,
-                avg_call_pnl, avg_put_pnl, max_profit, max_loss, historical_iv_crush,
-                implied_result_move, avg_result_move, max_result_move,
+                avg_straddle_pnl_pct, avg_call_pnl, avg_put_pnl, max_profit, max_loss,
+                historical_iv_crush, implied_result_move, avg_result_move, max_result_move,
                 avg_earnings_pnl, earnings_win_rate, max_earnings_profit, max_earnings_loss,
                 updated_at
             )
@@ -786,6 +787,7 @@ class MarketRepository:
                 metric_daily.vrp_win_rate,
                 metric_daily.avg_vrp_4y,
                 straddle_daily.avg_straddle_pnl,
+                straddle_daily.avg_straddle_pnl_pct,
                 straddle_daily.avg_call_pnl,
                 straddle_daily.avg_put_pnl,
                 straddle_daily.max_profit,
@@ -807,6 +809,7 @@ class MarketRepository:
                 vrp_win_rate = EXCLUDED.vrp_win_rate,
                 avg_vrp_4y = EXCLUDED.avg_vrp_4y,
                 avg_straddle_pnl = EXCLUDED.avg_straddle_pnl,
+                avg_straddle_pnl_pct = EXCLUDED.avg_straddle_pnl_pct,
                 avg_call_pnl = EXCLUDED.avg_call_pnl,
                 avg_put_pnl = EXCLUDED.avg_put_pnl,
                 max_profit = EXCLUDED.max_profit,

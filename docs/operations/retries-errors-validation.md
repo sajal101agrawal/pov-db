@@ -244,6 +244,7 @@ scripts/setup_server.sh
 scripts/bootstrap_history.sh
 scripts/install_daily_etl_cron.sh
 python scripts/recompute_option_volume.py
+python scripts/recompute_symbol_aggregates.py
 python scripts/update_result_events.py
 ```
 
@@ -256,6 +257,8 @@ Defaults:
 - `install_daily_etl_cron.sh` installs a weekday cron at `22:30` server time. It runs daily ETL, validates the DB, and clears Redis cache. Override with `CRON_TIME="45 22 * * 1-5"`.
 - `recompute_option_volume.py` repairs `avg_option_volume` from raw option rows without rerunning
   IV/Greeks or straddle analytics.
+- `recompute_symbol_aggregates.py` refreshes `symbol_aggregates`, including
+  `avg_straddle_pnl_pct`, from existing metric and straddle rows.
 - `update_result_events.py` refreshes only NSE/Yahoo result events and can be run manually between
   ETL runs. Clear Redis afterward if dashboard clients should see the new dates immediately.
 

@@ -158,7 +158,9 @@ Daily aggregate formulas:
 - `vrp_win_rate`: metric rows with non-null `vrp > 0`, divided by non-null `vrp` rows.
 - `avg_vrp_4y`: legacy column name; currently averages all loaded lookback rows. In the
   deployment run this is five years because the bootstrap lookback is five years.
-- `avg_straddle_pnl`, `avg_call_pnl`, `avg_put_pnl`: averages over valid daily straddle rows.
+- `avg_straddle_pnl`, `avg_call_pnl`, `avg_put_pnl`: rupee averages over valid daily straddle rows.
+- `avg_straddle_pnl_pct`: average `pnl / total_entry` over valid daily straddle rows, stored as a
+  decimal ratio (`0.0123` means `1.23%`).
 
 Earnings aggregate formulas:
 

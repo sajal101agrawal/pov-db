@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS symbol_aggregates (
     vrp_win_rate NUMERIC(6,2),
     avg_vrp_4y NUMERIC(10,8),
     avg_straddle_pnl NUMERIC(12,4),
+    avg_straddle_pnl_pct NUMERIC(10,6),
     avg_call_pnl NUMERIC(12,4),
     avg_put_pnl NUMERIC(12,4),
     max_profit NUMERIC(12,4),
@@ -246,6 +247,7 @@ ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS avg_earnings_pnl NUMERIC(
 ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS earnings_win_rate NUMERIC(6,2);
 ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS max_earnings_profit NUMERIC(12,4);
 ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS max_earnings_loss NUMERIC(12,4);
+ALTER TABLE symbol_aggregates ADD COLUMN IF NOT EXISTS avg_straddle_pnl_pct NUMERIC(10,6);
 
 CREATE TABLE IF NOT EXISTS live_snapshot (
     symbol VARCHAR(20) NOT NULL,

@@ -37,6 +37,7 @@ Repair/recompute derived analytics after a formula change:
 
 ```bash
 python scripts/recompute_option_volume.py
+python scripts/recompute_symbol_aggregates.py
 python scripts/recompute_rsi_metrics.py
 python scripts/recompute_straddle_pnl.py
 ```
