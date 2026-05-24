@@ -491,15 +491,25 @@ async def symbol_term_structure(
         return cached
     rows = await repo.pool.fetch(
         """
-        SELECT trade_date,
-               iv_30::float, iv_60::float, iv_90::float,
-               dte_30, dte_60, dte_90,
-               expiry_30d, expiry_60d, expiry_90d,
-               fwdv_3060::float, iv_slope_3060::float
-        FROM symbol_daily_metrics
-        WHERE symbol = $1
+        WITH ranked AS (
+            SELECT trade_date,
+                   iv_30::float, iv_60::float, iv_90::float,
+                   dte_30, dte_60, dte_90,
+                   expiry_30d, expiry_60d, expiry_90d,
+                   fwdv_3060::float, fwdfct_3060::float, iv_slope_3060::float,
+                   ROUND(
+                       (PERCENT_RANK() OVER (ORDER BY fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
+                   )::float AS fwdfct_3060_percentile,
+                   ROUND(
+                       (PERCENT_RANK() OVER (ORDER BY iv_slope_3060 NULLS FIRST) * 100)::numeric, 2
+                   )::float AS slope_percentile
+            FROM symbol_daily_metrics
+            WHERE symbol = $1
+            ORDER BY trade_date DESC
+            LIMIT $2
+        )
+        SELECT * FROM ranked
         ORDER BY trade_date DESC
-        LIMIT $2
         """,
         symbol.upper(),
         days,
