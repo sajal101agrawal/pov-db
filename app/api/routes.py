@@ -130,7 +130,11 @@ FILTERABLE_NUMERIC = {
     "daily_rsi":         "sdm.daily_rsi",
     "weekly_rsi":        "sdm.weekly_rsi",
     "nearest_ce_iv":     "sdm.nearest_ce_iv",
+    "nearest_ce_ltp":    "sdm.nearest_ce_ltp",
     "nearest_pe_iv":     "sdm.nearest_pe_iv",
+    "nearest_pe_ltp":    "sdm.nearest_pe_ltp",
+    "avg_call_pnl":      "sa.avg_call_pnl",
+    "avg_put_pnl":       "sa.avg_put_pnl",
     "iv30_rv30_ratio":   "sdm.iv30_rv30_ratio",
     "iv30_fev30_ratio":  "sdm.iv30_fev30_ratio",
     "avg_option_volume": "sdm.avg_option_volume",
@@ -751,15 +755,32 @@ async def symbol_pnl(
 
 
 @router.get("/live/{symbol}")
-async def live(symbol: str, cache_service: CacheService = Depends(cache)) -> dict:
+async def live(
+    symbol: str,
+    settings: Settings = Depends(get_settings),
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> dict:
+    symbol = symbol.upper()
     payload = await cache_service.get_live(symbol)
     if not payload:
-        raise HTTPException(status_code=404, detail="live data not available")
+        result = await fetch_and_store_live_quotes(settings, repo, cache_service.redis, [symbol])
+        payload = await cache_service.get_live(symbol)
+        if not payload:
+            raise HTTPException(status_code=404, detail=result)
     return payload
 
 
 @router.get("/live")
-async def live_symbols(cache_service: CacheService = Depends(cache)) -> list[dict]:
+async def live_symbols(
+    settings: Settings = Depends(get_settings),
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> list[dict]:
+    payload = await cache_service.get_live_symbols()
+    if payload:
+        return payload
+    await fetch_and_store_live_quotes(settings, repo, cache_service.redis)
     return await cache_service.get_live_symbols()
 
 
@@ -799,7 +820,7 @@ async def trigger_live_quotes(
             "api_live_quotes",
             type(exc).__name__,
             {"message": str(exc), "repr": repr(exc), "symbols": symbols},
-            source="dhan",
+            source=settings.live_quote_provider,
         )
         raise
     finally:

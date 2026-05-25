@@ -14,6 +14,7 @@ from app.sources.dhan import (
     normalize_market_quotes,
     normalize_option_chain,
 )
+from app.sources.yahoo import YahooFinanceClient
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -87,10 +88,24 @@ async def fetch_and_store_live_quotes(
     redis: Redis,
     symbols: list[str] | None = None,
 ) -> dict:
+    provider = settings.live_quote_provider.lower().strip()
+    if provider == "yahoo":
+        return await _fetch_and_store_yahoo_live_quotes(settings, repo, redis, symbols)
+    if provider == "dhan":
+        return await _fetch_and_store_dhan_live_quotes(settings, repo, redis, symbols)
+    raise ValueError(f"Unsupported LIVE_QUOTE_PROVIDER: {settings.live_quote_provider}")
+
+
+async def _fetch_and_store_dhan_live_quotes(
+    settings: Settings,
+    repo: MarketRepository,
+    redis: Redis,
+    symbols: list[str] | None = None,
+) -> dict:
     if not settings.dhan_client_id or not settings.dhan_access_token:
         raise RuntimeError("DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN are required for live quotes")
     selected = symbols or await repo.active_symbols()
-    selected = [symbol.upper() for symbol in selected]
+    selected = [symbol.upper() for symbol in selected if symbol.strip()]
     client = DhanOptionChainClient(
         settings.dhan_client_id,
         settings.dhan_access_token,
@@ -119,7 +134,7 @@ async def fetch_and_store_live_quotes(
     baseline = await repo.live_baseline(selected)
     cache = CacheService(redis)
     now = datetime.now(IST)
-    ttl = max(settings.live_poll_interval_seconds * 2, 300)
+    ttl = _live_cache_ttl(settings)
     payloads = []
     for symbol, quote in quotes.items():
         payload = {
@@ -139,17 +154,67 @@ async def fetch_and_store_live_quotes(
     }
 
 
+async def _fetch_and_store_yahoo_live_quotes(
+    settings: Settings,
+    repo: MarketRepository,
+    redis: Redis,
+    symbols: list[str] | None = None,
+) -> dict:
+    selected = symbols or await repo.active_symbols()
+    selected = [symbol.upper() for symbol in selected if symbol.strip()]
+    yahoo_symbols = await repo.yahoo_symbols_for(selected)
+    client = YahooFinanceClient(
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+    )
+    quotes = await client.fetch_live_quotes(selected, yahoo_symbols)
+    baseline = await repo.live_baseline(selected)
+    cache = CacheService(redis)
+    now = datetime.now(IST)
+    ttl = _live_cache_ttl(settings)
+    payloads = []
+    missing = []
+    for symbol in selected:
+        quote = quotes.get(symbol)
+        if not quote:
+            missing.append(symbol)
+            continue
+        base = baseline.get(symbol, {})
+        payload = {
+            **base,
+            **quote,
+            "snapshot_time": now.isoformat(),
+            "quote_type": "basic",
+        }
+        if base.get("avg_option_volume") is not None:
+            payload["avg_option_volume_source"] = "symbol_daily_metrics"
+        if base.get("iv_30") is not None:
+            payload["iv_30_source"] = "symbol_daily_metrics"
+        await cache.set_live(symbol, payload, ttl=ttl)
+        payloads.append(payload)
+    payloads.sort(key=lambda row: row["symbol"])
+    await cache.set_live_symbols(payloads, ttl=ttl)
+    return {
+        "symbols_requested": len(selected),
+        "quotes_stored": len(payloads),
+        "missing_symbols": missing,
+        "provider": "yahoo",
+        "ttl_seconds": ttl,
+    }
+
+
 async def live_worker_loop(settings: Settings, repo: MarketRepository, redis: Redis) -> None:
     while True:
         try:
-            if in_market_window(settings) and settings.dhan_client_id and settings.dhan_access_token:
+            if in_market_window(settings):
                 await fetch_and_store_live_quotes(settings, repo, redis)
         except Exception as exc:  # noqa: BLE001 - worker must keep running
             await repo.log_error(
                 "live_snapshot_worker",
                 type(exc).__name__,
                 {"message": str(exc), "repr": repr(exc)},
-                source="dhan",
+                source=settings.live_quote_provider,
             )
         await asyncio.sleep(settings.live_poll_interval_seconds)
 
@@ -171,3 +236,7 @@ async def _instrument_map(client: DhanOptionChainClient, symbols: list[str]) -> 
 def _parse_time(value: str) -> time:
     hour, minute = value.split(":", 1)
     return time(int(hour), int(minute), tzinfo=IST)
+
+
+def _live_cache_ttl(settings: Settings) -> int:
+    return max(1, int(settings.live_cache_ttl_seconds))

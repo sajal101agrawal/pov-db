@@ -66,9 +66,12 @@ Export a validated local DB for RDS restore:
 scripts/export_postgres_dump.sh
 ```
 
-For live data, add `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` to `.env`. The worker polls
-basic Dhan quotes for all active F&O symbols during the IST market window. Full option chains
-are fetched and cached on demand through `GET /api/live/{symbol}/option-chain`.
+For live data, `GET /api/live` returns all active symbols in one response for frontend polling.
+It refreshes from Yahoo Finance quotes on cache miss, stores the result in Redis for
+`LIVE_CACHE_TTL_SECONDS` seconds (default `300`), and includes the live underlying price plus
+the latest local `avg_option_volume` and `iv_30` analytics when available. `GET /api/live/{symbol}`
+uses the same cache/refresh path for one symbol. Dhan credentials are only needed for the optional
+full option-chain route, `GET /api/live/{symbol}/option-chain`.
 
 ## Result Events And Upcoming Earnings
 

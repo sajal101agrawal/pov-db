@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
+  Test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -27,9 +27,9 @@ jobs:
       - name: Run tests
         run: pytest -q
 
-  deploy:
+  Deploy:
     runs-on: ubuntu-latest
-    needs: test
+    needs: Test
     env:
       EC2_HOST: ${{ secrets.EC2_HOST }}
       EC2_USER: ${{ secrets.EC2_USER }}

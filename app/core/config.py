@@ -27,11 +27,13 @@ class Settings(BaseSettings):
     s3_dump_prefix: str = "etl-dumps/"
     dhan_client_id: str | None = None
     dhan_access_token: str | None = None
+    live_quote_provider: str = "yahoo"
     live_option_chain_provider: str = "dhan"
     live_market_quote_min_interval_seconds: float = 1.0
     live_option_chain_min_interval_seconds: float = 3.0
     live_symbols: str = "RELIANCE,SBIN,INFY,HDFCBANK,TCS,NIFTY,BANKNIFTY"
     live_poll_interval_seconds: int = 180
+    live_cache_ttl_seconds: int = 300
     live_market_start_ist: str = "09:00"
     live_market_end_ist: str = "16:00"
 

@@ -45,7 +45,8 @@ class CacheService:
 
     async def set_live(self, symbol: str, payload: dict, ttl: int = 60) -> None:
         key = f"live:{symbol.upper()}"
-        await self.redis.hset(key, mapping={k: json.dumps(v, default=str) if isinstance(v, (dict, list)) else v for k, v in payload.items()})
+        mapping = {k: json.dumps(v, default=str) for k, v in payload.items()}
+        await self.redis.hset(key, mapping=mapping)
         await self.redis.expire(key, ttl)
 
     async def get_live_symbols(self) -> list[dict]:
