@@ -68,10 +68,16 @@ scripts/export_postgres_dump.sh
 
 For live data, `GET /api/live` returns all active symbols in one response for frontend polling.
 It refreshes from Yahoo Finance quotes on cache miss, stores the result in Redis for
-`LIVE_CACHE_TTL_SECONDS` seconds (default `300`), and includes the live underlying price plus
-the latest local `avg_option_volume` and `iv_30` analytics when available. `GET /api/live/{symbol}`
-uses the same cache/refresh path for one symbol. Dhan credentials are only needed for the optional
-full option-chain route, `GET /api/live/{symbol}/option-chain`.
+`LIVE_CACHE_TTL_SECONDS` seconds (default `300`), and includes the live underlying price. It also
+tries NSE `option-chain-v3` for live all-strike CE+PE option volume and overlays that into
+`avg_option_volume` with `avg_option_volume_source='nse:option-chain-v3'`; if NSE is unavailable,
+the latest local EOD metric is returned with `avg_option_volume_source='symbol_daily_metrics'`.
+`live_atm_iv` is included when the NSE option-chain response has usable ATM IV. NSE option-summary
+requests are throttled by `LIVE_OPTION_SUMMARY_MIN_INTERVAL_SECONDS` (default `0.25`) with low
+concurrency and exponential backoff; persistent `403`/`429` responses stop the current NSE summary
+batch and leave the endpoint on EOD fallback data. `GET /api/live/{symbol}` uses the same
+cache/refresh path for one symbol. Dhan credentials are only needed for the optional full
+option-chain route, `GET /api/live/{symbol}/option-chain`.
 
 ## Result Events And Upcoming Earnings
 

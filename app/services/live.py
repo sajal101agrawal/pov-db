@@ -14,6 +14,7 @@ from app.sources.dhan import (
     normalize_market_quotes,
     normalize_option_chain,
 )
+from app.sources.nse_option_chain import NSEOptionChainClient
 from app.sources.yahoo import YahooFinanceClient
 
 
@@ -170,6 +171,7 @@ async def _fetch_and_store_yahoo_live_quotes(
     )
     quotes = await client.fetch_live_quotes(selected, yahoo_symbols)
     baseline = await repo.live_baseline(selected)
+    option_summaries = await _fetch_live_option_summaries(settings, selected, baseline)
     cache = CacheService(redis)
     now = datetime.now(IST)
     ttl = _live_cache_ttl(settings)
@@ -187,8 +189,18 @@ async def _fetch_and_store_yahoo_live_quotes(
             "snapshot_time": now.isoformat(),
             "quote_type": "basic",
         }
-        if base.get("avg_option_volume") is not None:
+        option_summary = option_summaries.get(symbol)
+        if option_summary:
+            if base.get("avg_option_volume") is not None:
+                payload["eod_avg_option_volume"] = base.get("avg_option_volume")
+            payload.update(option_summary)
+            payload["avg_option_volume"] = option_summary["live_option_volume"]
+            payload["avg_option_volume_source"] = option_summary["live_option_volume_source"]
+            payload["avg_option_volume_kind"] = option_summary["live_option_volume_kind"]
+        elif base.get("avg_option_volume") is not None:
             payload["avg_option_volume_source"] = "symbol_daily_metrics"
+        if base.get("avg_option_volume") is not None:
+            payload.setdefault("avg_option_volume_kind", "eod_total_contracts_all_strikes")
         if base.get("iv_30") is not None:
             payload["iv_30_source"] = "symbol_daily_metrics"
         await cache.set_live(symbol, payload, ttl=ttl)
@@ -202,6 +214,32 @@ async def _fetch_and_store_yahoo_live_quotes(
         "provider": "yahoo",
         "ttl_seconds": ttl,
     }
+
+
+async def _fetch_live_option_summaries(
+    settings: Settings,
+    symbols: list[str],
+    baseline: dict[str, dict],
+) -> dict[str, dict]:
+    provider = settings.live_option_summary_provider.lower().strip()
+    if provider in {"", "none", "disabled"}:
+        return {}
+    if provider != "nse":
+        raise ValueError(
+            f"Unsupported LIVE_OPTION_SUMMARY_PROVIDER: {settings.live_option_summary_provider}"
+        )
+    expiry_hints = {symbol: baseline.get(symbol, {}).get("expiry_30d") for symbol in symbols}
+    client = NSEOptionChainClient(
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+        settings.live_option_summary_concurrency,
+        settings.live_option_summary_min_interval_seconds,
+    )
+    try:
+        return await client.fetch_summaries(symbols, expiry_hints)
+    except Exception:
+        return {}
 
 
 async def live_worker_loop(settings: Settings, repo: MarketRepository, redis: Redis) -> None:

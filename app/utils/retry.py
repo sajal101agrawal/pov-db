@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+import random
 from typing import TypeVar
 
 import httpx
@@ -44,5 +47,28 @@ async def retry_async(
             if attempt >= safe_attempts or not retryable(exc):
                 raise
             delay = min(max_delay_seconds, base_delay_seconds * (2 ** (attempt - 1)))
+            retry_after = _retry_after_seconds(exc)
+            if retry_after is not None:
+                delay = min(max_delay_seconds, max(delay, retry_after))
+            delay += random.uniform(0, delay * 0.1)
             await asyncio.sleep(delay)
     raise RuntimeError("retry loop exited without result") from last_exc
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    value = exc.response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            delta = retry_at.timestamp() - datetime.now(timezone.utc).timestamp()
+            return max(0.0, delta)
+        except (TypeError, ValueError):
+            return None

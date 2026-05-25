@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     dhan_client_id: str | None = None
     dhan_access_token: str | None = None
     live_quote_provider: str = "yahoo"
+    live_option_summary_provider: str = "nse"
+    live_option_summary_concurrency: int = 2
+    live_option_summary_min_interval_seconds: float = 0.25
     live_option_chain_provider: str = "dhan"
     live_market_quote_min_interval_seconds: float = 1.0
     live_option_chain_min_interval_seconds: float = 3.0
