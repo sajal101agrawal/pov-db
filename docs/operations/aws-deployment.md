@@ -10,7 +10,7 @@ loading a PostgreSQL dump into AWS RDS, is the right practical approach.
 Reason:
 
 - Historical bootstrap is CPU/network heavy and can run for hours.
-- EC2 should only run the API, live Dhan worker, and daily EOD ETL.
+- EC2 should only run the API, live worker, and daily EOD ETL.
 - RDS should hold durable data; do not run Postgres in Docker for production.
 - Redeploys should rebuild API/worker containers without replacing RDS data.
 
@@ -147,7 +147,7 @@ Optional repository secrets:
 - `EC2_APP_DIR`, defaults to `/opt/pov-db`
 
 Before the first deploy, create `$EC2_APP_DIR/shared/.env` on EC2 with the production RDS URL,
-Redis URL, Dhan credentials, and app settings. The workflow uploads each commit into a release
+Redis URL, optional Dhan credentials, and app settings. The workflow uploads each commit into a release
 directory, updates the `current` symlink, copies the shared `.env`, and runs `scripts/deploy_prod.sh`.
 
 ## Daily Operations

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     live_option_summary_provider: str = "nse"
     live_option_summary_concurrency: int = 2
     live_option_summary_min_interval_seconds: float = 0.25
-    live_option_chain_provider: str = "dhan"
+    live_option_chain_provider: str = "nse"
     live_market_quote_min_interval_seconds: float = 1.0
     live_option_chain_min_interval_seconds: float = 3.0
     live_symbols: str = "RELIANCE,SBIN,INFY,HDFCBANK,TCS,NIFTY,BANKNIFTY"

@@ -61,6 +61,30 @@ class NSEOptionChainClient:
             rows = await asyncio.gather(*tasks)
         return {row["symbol"]: row for row in rows if row}
 
+    async def fetch_chain(
+        self,
+        symbol: str,
+        expiry_hint: date | str | None = None,
+    ) -> dict[str, Any] | None:
+        symbol = symbol.upper()
+        headers = {
+            **NSE_HEADERS,
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": "https://www.nseindia.com/option-chain",
+        }
+        semaphore = asyncio.Semaphore(1)
+        stop_event = asyncio.Event()
+        expiry = _format_expiry(expiry_hint) or self.discovery_expiry
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30) as client:
+            payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
+            if payload and expiry == self.discovery_expiry:
+                expiries = ((payload.get("records") or {}).get("expiryDates")) or []
+                if not expiries:
+                    return None
+                expiry = str(expiries[0])
+                payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
+        return normalize_option_chain_payload(symbol, payload, expiry)
+
     async def _fetch_summary(
         self,
         client: httpx.AsyncClient,
@@ -214,6 +238,45 @@ def normalize_option_chain_summary(
     }
 
 
+def normalize_option_chain_payload(
+    symbol: str,
+    payload: dict[str, Any] | None,
+    expiry: str,
+) -> dict[str, Any] | None:
+    records = (payload or {}).get("records") or {}
+    rows = records.get("data") or []
+    if not rows:
+        return None
+
+    underlying = _float(records.get("underlyingValue"))
+    if not underlying:
+        underlying = _first_underlying(rows)
+
+    strikes = []
+    for row in rows:
+        strike = _float(row.get("strikePrice"))
+        if strike is None:
+            continue
+        strikes.append(
+            {
+                "strike": strike,
+                "ce": _normalize_nse_leg(row.get("CE") or {}),
+                "pe": _normalize_nse_leg(row.get("PE") or {}),
+            }
+        )
+
+    return {
+        "symbol": symbol.upper(),
+        "expiry": (_parse_expiry(expiry).isoformat() if _parse_expiry(expiry) else expiry),
+        "underlying_last_price": underlying,
+        "strike_count": len(strikes),
+        "strikes": sorted(strikes, key=lambda row: row["strike"] or 0),
+        "provider": "nse",
+        "source": "nse:option-chain-v3",
+        "nse_option_chain_timestamp": records.get("timestamp"),
+    }
+
+
 def _is_retryable_nse_exception(exc: Exception) -> bool:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in {408, 425, 429, 500, 502, 503, 504}
@@ -242,6 +305,31 @@ def _format_expiry(value: date | str | None) -> str | None:
         return datetime.fromisoformat(text).date().strftime("%d-%b-%Y")
     except ValueError:
         return text
+
+
+def _normalize_nse_leg(leg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "security_id": leg.get("identifier"),
+        "last_price": _float(leg.get("lastPrice")),
+        "top_bid_price": _first_numeric(leg, ["bidprice", "bidPrice"]),
+        "top_ask_price": _first_numeric(leg, ["askPrice", "askprice"]),
+        "volume": _int(leg.get("totalTradedVolume")),
+        "oi": _int(leg.get("openInterest")),
+        "previous_oi": None,
+        "implied_volatility": _iv_decimal(leg.get("impliedVolatility")),
+        "delta": None,
+        "theta": None,
+        "gamma": None,
+        "vega": None,
+    }
+
+
+def _first_numeric(mapping: dict[str, Any], keys: list[str]) -> float | None:
+    for key in keys:
+        value = _float(mapping.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _parse_expiry(value: str) -> date | None:

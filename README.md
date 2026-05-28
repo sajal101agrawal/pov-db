@@ -80,8 +80,9 @@ historical series cached but overlays the latest live IV/factor/slope row at rea
 option-summary requests are throttled by `LIVE_OPTION_SUMMARY_MIN_INTERVAL_SECONDS` (default
 `0.25`) with low concurrency and exponential backoff; persistent `403`/`429` responses stop the
 current NSE summary batch and leave the endpoint on EOD fallback data. `GET /api/live/{symbol}`
-uses the same cache/refresh path for one symbol. Dhan credentials are only needed for the optional
-full option-chain route, `GET /api/live/{symbol}/option-chain`.
+uses the same cache/refresh path for one symbol. `GET /api/live/{symbol}/option-chain` also uses
+NSE `option-chain-v3` by default, so Dhan credentials are not required for local live data. Dhan
+remains an optional provider only when `LIVE_OPTION_CHAIN_PROVIDER=dhan` is explicitly configured.
 
 ## Result Events And Upcoming Earnings
 

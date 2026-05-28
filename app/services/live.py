@@ -48,6 +48,11 @@ async def fetch_and_store_live_snapshots(
     redis: Redis,
     symbols: list[str] | None = None,
 ) -> dict:
+    provider = settings.live_option_chain_provider.lower().strip()
+    if provider == "nse":
+        return await _fetch_and_store_nse_live_snapshots(settings, repo, redis, symbols)
+    if provider != "dhan":
+        raise ValueError(f"Unsupported LIVE_OPTION_CHAIN_PROVIDER: {settings.live_option_chain_provider}")
     if not settings.dhan_client_id or not settings.dhan_access_token:
         raise RuntimeError("DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN are required for live snapshots")
     selected = symbols or parse_symbols(settings.live_symbols)
@@ -85,6 +90,44 @@ async def fetch_and_store_live_snapshots(
             }
         )
         await cache.set_live(f"chain:{symbol}", payload, ttl=max(settings.live_poll_interval_seconds * 2, 300))
+        await repo.insert_live_snapshot(symbol, now, payload)
+        stored += 1
+    return {"symbols_requested": len(selected), "snapshots_stored": stored, "missing_symbols": missing}
+
+
+async def _fetch_and_store_nse_live_snapshots(
+    settings: Settings,
+    repo: MarketRepository,
+    redis: Redis,
+    symbols: list[str] | None = None,
+) -> dict:
+    selected = symbols or parse_symbols(settings.live_symbols)
+    baseline = await repo.live_baseline([symbol.upper() for symbol in selected])
+    client = NSEOptionChainClient(
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+        settings.live_option_summary_concurrency,
+        settings.live_option_summary_min_interval_seconds,
+    )
+    cache = CacheService(redis)
+    now = datetime.now(IST)
+    stored = 0
+    missing = []
+    ttl = max(settings.live_poll_interval_seconds * 2, 300)
+    for symbol in selected:
+        symbol = symbol.upper()
+        payload = await client.fetch_chain(symbol, baseline.get(symbol, {}).get("expiry_30d"))
+        if not payload:
+            missing.append(symbol)
+            continue
+        payload.update(
+            {
+                "snapshot_time": now.isoformat(),
+                "instrument_source": "nse:option-chain-v3",
+            }
+        )
+        await cache.set_live(f"chain:{symbol}", payload, ttl=ttl)
         await repo.insert_live_snapshot(symbol, now, payload)
         stored += 1
     return {"symbols_requested": len(selected), "snapshots_stored": stored, "missing_symbols": missing}
@@ -241,7 +284,7 @@ async def _fetch_live_option_summaries(
 async def live_worker_loop(settings: Settings, repo: MarketRepository, redis: Redis) -> None:
     while True:
         try:
-            if in_market_window(settings):
+            if await _should_poll_live(settings, repo):
                 await fetch_and_store_live_quotes(settings, repo, redis)
         except Exception as exc:  # noqa: BLE001 - worker must keep running
             await repo.log_error(
@@ -251,6 +294,17 @@ async def live_worker_loop(settings: Settings, repo: MarketRepository, redis: Re
                 source=settings.live_quote_provider,
             )
         await asyncio.sleep(settings.live_poll_interval_seconds)
+
+
+async def _should_poll_live(settings: Settings, repo: MarketRepository) -> bool:
+    if not in_market_window(settings):
+        return False
+    today = datetime.now(IST).date()
+    is_trading_day = await repo.pool.fetchval(
+        "SELECT is_trading_day FROM trading_calendar WHERE trade_date = $1",
+        today,
+    )
+    return is_trading_day is not False
 
 
 def _closest_expiry(expiries, trade_date, target_dte: int):
@@ -287,6 +341,8 @@ def _live_quote_payload(
         **quote,
         "snapshot_time": now.isoformat(),
         "quote_type": "basic",
+        "quote_provider": quote.get("provider"),
+        "quote_provider_symbol": quote.get("provider_symbol"),
     }
 
     if option_summary:
@@ -304,11 +360,15 @@ def _live_quote_payload(
                 "iv_slope_3060",
             ],
         )
-        payload.update(option_summary)
+        summary_payload = dict(option_summary)
+        if summary_payload.get("provider"):
+            payload["live_option_provider"] = summary_payload.pop("provider")
+        payload.update(summary_payload)
         payload["avg_option_volume"] = option_summary["live_option_volume"]
         payload["avg_option_volume_source"] = option_summary["live_option_volume_source"]
         payload["avg_option_volume_kind"] = option_summary["live_option_volume_kind"]
-        payload.update(_live_forward_metrics(option_summary, now.date()))
+        live_metrics = _live_forward_metrics(option_summary, now.date())
+        payload.update({key: value for key, value in live_metrics.items() if value is not None})
     elif base.get("avg_option_volume") is not None:
         payload["avg_option_volume_source"] = "symbol_daily_metrics"
 
@@ -392,13 +452,17 @@ def _constant_maturity_from_terms(terms: list[dict[str, Any]], target_dte: int) 
     exact = next((item["iv"] for item in terms if item["dte"] == target_dte), None)
     if exact is not None:
         return exact
+    if len(terms) == 1:
+        return terms[0]["iv"] if target_dte <= terms[0]["dte"] else None
     below = [item for item in terms if item["dte"] < target_dte]
     above = [item for item in terms if item["dte"] > target_dte]
     if below and above:
         near = max(below, key=lambda item: item["dte"])
         far = min(above, key=lambda item: item["dte"])
         return constant_maturity_iv(near["iv"], near["dte"], far["iv"], far["dte"], target_dte)
-    return min(terms, key=lambda item: abs(item["dte"] - target_dte))["iv"]
+    if above:
+        return min(above, key=lambda item: item["dte"])["iv"]
+    return None
 
 
 def _coerce_date(value: Any) -> date | None:

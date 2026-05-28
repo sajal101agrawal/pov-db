@@ -242,8 +242,10 @@ Purpose: optional PostgreSQL fallback/audit table for live data.
 
 Current write path:
 
-- `scripts/live_snapshot_worker.py` polls Dhan during the configured IST market window.
-- `POST /api/admin/live-snapshot` can trigger a manual snapshot after Dhan credentials are configured.
+- `scripts/live_snapshot_worker.py` polls the configured live quote provider during the configured
+  IST market window.
+- `POST /api/admin/live-snapshot` can trigger a manual option-chain snapshot using the configured
+  option-chain provider. NSE is the default provider and does not require Dhan credentials.
 - The same normalized payload is written to Redis for the live API and to PostgreSQL for audit.
 
 ### `pipeline_state`

@@ -79,7 +79,7 @@ not intraday timestamps. The straddle backtest therefore stores one row per symb
 - entry price = option `OPEN`
 - exit price = option `CLOSE`
 
-Live or intraday data should be added through the Dhan/live option-chain path when exact timed
+Live or intraday data should be added through the live option-chain path when exact timed
 morning/evening execution is required.
 
 ## Historical IV Cross-Validation

@@ -153,7 +153,7 @@ Nulls are not all defects. Current expected null classes:
 - `symbol_aggregates` result/earnings fields: no result-event overlap with a valid previous
   trading-day entry and next trading-day exit.
 - `symbol_universe.sector`: available from NSE quote metadata or index files, not from bhavcopy. Run `scripts/initialize_market_data.py --enrich-quote` to fill it where NSE exposes it.
-- `live_snapshot`: empty until Dhan credentials are configured and the live worker/manual trigger succeeds.
+- `live_snapshot`: empty until the live worker or manual live snapshot trigger succeeds.
 - `pipeline_state`: reserved for future job state.
 
 ## Current Local Data Quality Snapshot
