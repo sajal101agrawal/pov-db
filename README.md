@@ -86,6 +86,10 @@ remains an optional provider only when `LIVE_OPTION_CHAIN_PROVIDER=dhan` is expl
 if that provider fails, the endpoint logs the Dhan failure and falls back to NSE instead of
 returning a 500.
 
+`LIVE_SYMBOLS=all` (or blank) makes background/manual live refreshes use every active symbol from
+`symbol_universe`. Set a comma-separated list only when you intentionally want to limit live polling
+to a smaller watchlist.
+
 ## Result Events And Upcoming Earnings
 
 Completed/filed result events come from NSE corporate-event data and are stored in `events`

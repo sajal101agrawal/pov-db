@@ -33,6 +33,19 @@ def parse_symbols(value: str) -> list[str]:
     return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 
+async def selected_live_symbols(
+    settings: Settings,
+    repo: MarketRepository,
+    symbols: list[str] | None = None,
+) -> list[str]:
+    if symbols is not None:
+        return [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+    configured = settings.live_symbols.strip()
+    if configured.lower() in {"", "all", "*"}:
+        return await repo.active_symbols()
+    return parse_symbols(configured)
+
+
 def in_market_window(settings: Settings, now: datetime | None = None) -> bool:
     current = now.astimezone(IST) if now else datetime.now(IST)
     if current.weekday() >= 5:
@@ -80,7 +93,7 @@ async def _fetch_and_store_dhan_live_snapshots(
 ) -> dict:
     if not settings.dhan_client_id or not settings.dhan_access_token:
         raise RuntimeError("DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN are required for live snapshots")
-    selected = symbols or parse_symbols(settings.live_symbols)
+    selected = await selected_live_symbols(settings, repo, symbols)
     client = DhanOptionChainClient(
         settings.dhan_client_id,
         settings.dhan_access_token,
@@ -126,7 +139,7 @@ async def _fetch_and_store_nse_live_snapshots(
     redis: Redis,
     symbols: list[str] | None = None,
 ) -> dict:
-    selected = symbols or parse_symbols(settings.live_symbols)
+    selected = await selected_live_symbols(settings, repo, symbols)
     baseline = await repo.live_baseline([symbol.upper() for symbol in selected])
     client = NSEOptionChainClient(
         settings.source_retry_attempts,
@@ -180,8 +193,7 @@ async def _fetch_and_store_dhan_live_quotes(
 ) -> dict:
     if not settings.dhan_client_id or not settings.dhan_access_token:
         raise RuntimeError("DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN are required for live quotes")
-    selected = symbols or await repo.active_symbols()
-    selected = [symbol.upper() for symbol in selected if symbol.strip()]
+    selected = await selected_live_symbols(settings, repo, symbols)
     client = DhanOptionChainClient(
         settings.dhan_client_id,
         settings.dhan_access_token,
@@ -237,8 +249,7 @@ async def _fetch_and_store_yahoo_live_quotes(
     redis: Redis,
     symbols: list[str] | None = None,
 ) -> dict:
-    selected = symbols or await repo.active_symbols()
-    selected = [symbol.upper() for symbol in selected if symbol.strip()]
+    selected = await selected_live_symbols(settings, repo, symbols)
     yahoo_symbols = await repo.yahoo_symbols_for(selected)
     client = YahooFinanceClient(
         settings.source_retry_attempts,

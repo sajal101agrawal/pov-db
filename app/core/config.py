@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     live_option_chain_provider: str = "nse"
     live_market_quote_min_interval_seconds: float = 1.0
     live_option_chain_min_interval_seconds: float = 3.0
-    live_symbols: str = "RELIANCE,SBIN,INFY,HDFCBANK,TCS,NIFTY,BANKNIFTY"
+    live_symbols: str = "all"
     live_poll_interval_seconds: int = 180
     live_cache_ttl_seconds: int = 300
     live_market_start_ist: str = "09:00"

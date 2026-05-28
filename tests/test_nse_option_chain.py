@@ -7,7 +7,7 @@ import pytest
 
 import app.services.live as live_service
 from app.core.config import Settings
-from app.services.live import _live_forward_metrics
+from app.services.live import _live_forward_metrics, selected_live_symbols
 from app.sources.nse_option_chain import normalize_option_chain_payload, normalize_option_chain_summary
 from app.sources.nse_option_chain import _format_expiry
 
@@ -155,3 +155,25 @@ async def test_live_snapshot_falls_back_to_nse_when_dhan_fails(monkeypatch: pyte
 
     assert result == {"symbols_requested": 1, "snapshots_stored": 1}
     assert calls == [("dhan:fallback_to_nse", ["RELIANCE"]), ("nse", ["RELIANCE"])]
+
+
+@pytest.mark.asyncio
+async def test_selected_live_symbols_all_uses_active_universe() -> None:
+    class Repo:
+        async def active_symbols(self) -> list[str]:
+            return ["RELIANCE", "SBIN"]
+
+    result = await selected_live_symbols(Settings(live_symbols="all"), Repo())  # type: ignore[arg-type]
+
+    assert result == ["RELIANCE", "SBIN"]
+
+
+@pytest.mark.asyncio
+async def test_selected_live_symbols_comma_list_limits_universe() -> None:
+    class Repo:
+        async def active_symbols(self) -> list[str]:
+            raise AssertionError("active universe should not be loaded")
+
+    result = await selected_live_symbols(Settings(live_symbols="reliance, sbin"), Repo())  # type: ignore[arg-type]
+
+    assert result == ["RELIANCE", "SBIN"]

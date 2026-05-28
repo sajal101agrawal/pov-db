@@ -35,13 +35,15 @@ LIVE_OPTION_SUMMARY_PROVIDER=nse
 LIVE_OPTION_CHAIN_PROVIDER=nse
 LIVE_MARKET_QUOTE_MIN_INTERVAL_SECONDS=1.0
 LIVE_OPTION_CHAIN_MIN_INTERVAL_SECONDS=3.0
-LIVE_SYMBOLS=RELIANCE,SBIN,INFY,HDFCBANK,TCS,NIFTY,BANKNIFTY
+LIVE_SYMBOLS=all
 LIVE_POLL_INTERVAL_SECONDS=180
 LIVE_MARKET_START_IST=09:00
 LIVE_MARKET_END_IST=16:00
 ```
 
 Dhan credentials can remain blank for the default local live path.
+`LIVE_SYMBOLS=all` (or blank) means all active symbols from `symbol_universe`; a comma-separated
+list limits live polling to those symbols.
 
 ## Implementation Shape
 

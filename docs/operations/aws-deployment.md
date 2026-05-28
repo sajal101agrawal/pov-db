@@ -122,6 +122,7 @@ pg_restore --clean --if-exists --no-owner --dbname "$PROD_DATABASE_URL" pov-prod
    - `REDIS_URL=redis://redis:6379/0` if Redis is local Docker
    - `LIVE_OPTION_CHAIN_PROVIDER=nse`
    - `LIVE_OPTION_SUMMARY_PROVIDER=nse`
+   - `LIVE_SYMBOLS=all`
    - `S3_DUMP_BUCKET=...` (optional but recommended for automated backups)
    - `AWS_ACCESS_KEY_ID=...` / `AWS_SECRET_ACCESS_KEY=...`
 4. Run:
