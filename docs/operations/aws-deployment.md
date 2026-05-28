@@ -120,8 +120,8 @@ pg_restore --clean --if-exists --no-owner --dbname "$PROD_DATABASE_URL" pov-prod
 3. Set:
    - `DATABASE_URL=postgresql://...rds.amazonaws.com:5432/...`
    - `REDIS_URL=redis://redis:6379/0` if Redis is local Docker
-   - `DHAN_CLIENT_ID=...`
-   - `DHAN_ACCESS_TOKEN=...`
+   - `LIVE_OPTION_CHAIN_PROVIDER=nse`
+   - `LIVE_OPTION_SUMMARY_PROVIDER=nse`
    - `S3_DUMP_BUCKET=...` (optional but recommended for automated backups)
    - `AWS_ACCESS_KEY_ID=...` / `AWS_SECRET_ACCESS_KEY=...`
 4. Run:
@@ -147,7 +147,7 @@ Optional repository secrets:
 - `EC2_APP_DIR`, defaults to `/opt/pov-db`
 
 Before the first deploy, create `$EC2_APP_DIR/shared/.env` on EC2 with the production RDS URL,
-Redis URL, optional Dhan credentials, and app settings. The workflow uploads each commit into a release
+Redis URL, live provider settings, and app settings. The workflow uploads each commit into a release
 directory, updates the `current` symlink, copies the shared `.env`, and runs `scripts/deploy_prod.sh`.
 
 ## Daily Operations

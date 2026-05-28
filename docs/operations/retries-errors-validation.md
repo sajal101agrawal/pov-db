@@ -52,7 +52,8 @@ Currently logged:
 
 - `initialize_market_data` failures during historical runs.
 - `daily_update` failures during daily ETL runs.
-- `live_snapshot_worker` failures during Dhan live polling.
+- `live_snapshot_worker` failures during live polling, including Dhan-to-NSE fallback events when
+  legacy Dhan option-chain configuration fails.
 - `api_live_snapshot` failures from `/api/admin/live-snapshot`.
 - `api_trigger_pipeline` failures from `/api/admin/trigger-pipeline`.
 - Uncaught API errors via the global FastAPI exception handler.

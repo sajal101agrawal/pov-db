@@ -1043,7 +1043,7 @@ async def trigger_live_snapshot(
             "api_live_snapshot",
             type(exc).__name__,
             {"message": str(exc), "repr": repr(exc), "symbols": symbols},
-            source="dhan",
+            source=settings.live_option_chain_provider,
         )
         raise
     finally:

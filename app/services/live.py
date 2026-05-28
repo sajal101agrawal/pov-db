@@ -53,6 +53,31 @@ async def fetch_and_store_live_snapshots(
         return await _fetch_and_store_nse_live_snapshots(settings, repo, redis, symbols)
     if provider != "dhan":
         raise ValueError(f"Unsupported LIVE_OPTION_CHAIN_PROVIDER: {settings.live_option_chain_provider}")
+
+    try:
+        return await _fetch_and_store_dhan_live_snapshots(settings, repo, redis, symbols)
+    except Exception as exc:
+        await repo.log_error(
+            "live_snapshot_provider_fallback",
+            type(exc).__name__,
+            {
+                "message": str(exc),
+                "repr": repr(exc),
+                "provider": "dhan",
+                "fallback_provider": "nse",
+                "symbols": symbols,
+            },
+            source="dhan:fallback_to_nse",
+        )
+        return await _fetch_and_store_nse_live_snapshots(settings, repo, redis, symbols)
+
+
+async def _fetch_and_store_dhan_live_snapshots(
+    settings: Settings,
+    repo: MarketRepository,
+    redis: Redis,
+    symbols: list[str] | None = None,
+) -> dict:
     if not settings.dhan_client_id or not settings.dhan_access_token:
         raise RuntimeError("DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN are required for live snapshots")
     selected = symbols or parse_symbols(settings.live_symbols)

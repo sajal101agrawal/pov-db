@@ -82,7 +82,9 @@ option-summary requests are throttled by `LIVE_OPTION_SUMMARY_MIN_INTERVAL_SECON
 current NSE summary batch and leave the endpoint on EOD fallback data. `GET /api/live/{symbol}`
 uses the same cache/refresh path for one symbol. `GET /api/live/{symbol}/option-chain` also uses
 NSE `option-chain-v3` by default, so Dhan credentials are not required for local live data. Dhan
-remains an optional provider only when `LIVE_OPTION_CHAIN_PROVIDER=dhan` is explicitly configured.
+remains an optional provider only when `LIVE_OPTION_CHAIN_PROVIDER=dhan` is explicitly configured;
+if that provider fails, the endpoint logs the Dhan failure and falls back to NSE instead of
+returning a 500.
 
 ## Result Events And Upcoming Earnings
 

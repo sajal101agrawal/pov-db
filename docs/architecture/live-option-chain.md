@@ -24,7 +24,8 @@ The default live stack is:
 - NSE `option-chain-v3` for live option volume, ATM IV, IV term structure, and full option-chain
   snapshots.
 - Dhan is optional only when `LIVE_QUOTE_PROVIDER=dhan` or `LIVE_OPTION_CHAIN_PROVIDER=dhan` is
-  explicitly configured.
+  explicitly configured. For full option-chain snapshots, Dhan failures are logged and the API
+  falls back to NSE so stale credentials do not break `/api/live/{symbol}/option-chain`.
 
 Config placeholders are already in `.env.example`:
 

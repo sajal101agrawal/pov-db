@@ -3,6 +3,10 @@ from __future__ import annotations
 import math
 from datetime import date
 
+import pytest
+
+import app.services.live as live_service
+from app.core.config import Settings
 from app.services.live import _live_forward_metrics
 from app.sources.nse_option_chain import normalize_option_chain_payload, normalize_option_chain_summary
 from app.sources.nse_option_chain import _format_expiry
@@ -122,3 +126,32 @@ def test_live_forward_metrics_do_not_invent_missing_far_tenor() -> None:
     assert metrics["iv_90"] is None
     assert metrics["fwdv_3060"] is None
     assert metrics["fwdfct_3060"] is None
+
+
+@pytest.mark.asyncio
+async def test_live_snapshot_falls_back_to_nse_when_dhan_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, list[str] | None]] = []
+
+    class Repo:
+        async def log_error(self, task_name: str, error_type: str, details: dict, source: str) -> None:
+            calls.append((source, details["symbols"]))
+
+    async def dhan_failure(settings: Settings, repo: Repo, redis: object, symbols: list[str] | None) -> dict:
+        raise RuntimeError("dhan unauthorized")
+
+    async def nse_success(settings: Settings, repo: Repo, redis: object, symbols: list[str] | None) -> dict:
+        calls.append(("nse", symbols))
+        return {"symbols_requested": len(symbols or []), "snapshots_stored": len(symbols or [])}
+
+    monkeypatch.setattr(live_service, "_fetch_and_store_dhan_live_snapshots", dhan_failure)
+    monkeypatch.setattr(live_service, "_fetch_and_store_nse_live_snapshots", nse_success)
+
+    result = await live_service.fetch_and_store_live_snapshots(
+        Settings(live_option_chain_provider="dhan", dhan_client_id="id", dhan_access_token="token"),
+        Repo(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        ["RELIANCE"],
+    )
+
+    assert result == {"symbols_requested": 1, "snapshots_stored": 1}
+    assert calls == [("dhan:fallback_to_nse", ["RELIANCE"]), ("nse", ["RELIANCE"])]
