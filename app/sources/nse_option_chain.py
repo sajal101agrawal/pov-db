@@ -67,22 +67,41 @@ class NSEOptionChainClient:
         semaphore: asyncio.Semaphore,
         stop_event: asyncio.Event,
         symbol: str,
-        expiry_hint: date | str | None,
+        expiry_hint: date | str | dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         if stop_event.is_set():
             return None
-        expiry = _format_expiry(expiry_hint) or self.discovery_expiry
+
+        expiry_targets = _expiry_targets(expiry_hint)
+        if expiry_targets:
+            summaries = []
+            for expiry in expiry_targets:
+                payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
+                summary = normalize_option_chain_summary(symbol, payload, expiry)
+                if summary:
+                    summaries.append(summary)
+                if stop_event.is_set():
+                    break
+            return _combine_expiry_summaries(symbol, summaries)
+
+        expiry = self.discovery_expiry
         payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
         summary = normalize_option_chain_summary(symbol, payload, expiry)
         if summary:
             return summary
 
         expiries = ((payload or {}).get("records") or {}).get("expiryDates") or []
-        if not expiries or expiry != self.discovery_expiry or stop_event.is_set():
+        if not expiries or stop_event.is_set():
             return None
-        expiry = str(expiries[0])
-        payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
-        return normalize_option_chain_summary(symbol, payload, expiry)
+        summaries = []
+        for expiry in [str(item) for item in expiries[:3]]:
+            payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
+            summary = normalize_option_chain_summary(symbol, payload, expiry)
+            if summary:
+                summaries.append(summary)
+            if stop_event.is_set():
+                break
+        return _combine_expiry_summaries(symbol, summaries)
 
     async def _fetch_payload(
         self,
@@ -177,6 +196,7 @@ def normalize_option_chain_summary(
 
     atm = _atm_row(strikes, underlying)
     atm_iv = _average([atm.get("ce_iv"), atm.get("pe_iv")]) if atm else None
+    expiry_date = _parse_expiry(expiry)
     return {
         "symbol": symbol.upper(),
         "provider": "nse",
@@ -184,6 +204,7 @@ def normalize_option_chain_summary(
         "live_option_volume_source": "nse:option-chain-v3",
         "live_option_volume_kind": "total_contracts_all_strikes",
         "live_option_expiry": expiry,
+        "live_option_expiry_date": expiry_date,
         "live_option_strike_count": strike_count,
         "live_option_underlying": underlying,
         "live_atm_strike": atm.get("strike") if atm else None,
@@ -221,6 +242,58 @@ def _format_expiry(value: date | str | None) -> str | None:
         return datetime.fromisoformat(text).date().strftime("%d-%b-%Y")
     except ValueError:
         return text
+
+
+def _parse_expiry(value: str) -> date | None:
+    text = str(value).strip()
+    for fmt in ("%d-%b-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _expiry_targets(value: date | str | dict[str, Any] | None) -> list[str]:
+    if not isinstance(value, dict):
+        formatted = _format_expiry(value)
+        return [formatted] if formatted else []
+    targets = [
+        _format_expiry(value.get("expiry_30d")),
+        _format_expiry(value.get("expiry_60d")),
+        _format_expiry(value.get("expiry_90d")),
+    ]
+    seen = set()
+    result = []
+    for target in targets:
+        if target and target not in seen:
+            seen.add(target)
+            result.append(target)
+    return result
+
+
+def _combine_expiry_summaries(
+    symbol: str,
+    summaries: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not summaries:
+        return None
+    primary = dict(summaries[0])
+    primary["live_iv_terms"] = [
+        {
+            "expiry": item.get("live_option_expiry"),
+            "expiry_date": item.get("live_option_expiry_date"),
+            "atm_strike": item.get("live_atm_strike"),
+            "atm_iv": item.get("live_atm_iv"),
+            "underlying": item.get("live_option_underlying"),
+            "strike_count": item.get("live_option_strike_count"),
+            "timestamp": item.get("nse_option_chain_timestamp"),
+        }
+        for item in summaries
+    ]
+    primary["live_iv_term_count"] = len(summaries)
+    primary["symbol"] = symbol.upper()
+    return primary
 
 
 def _first_underlying(rows: list[dict[str, Any]]) -> float | None:

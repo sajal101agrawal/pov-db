@@ -1,6 +1,6 @@
 # Live Market Data Architecture
 
-Last updated: 2026-05-21.
+Last updated: 2026-05-28.
 
 ## Current State
 
@@ -10,7 +10,8 @@ data is implemented through DhanHQ v2 and runs as the `worker` container in Dock
 There are two live paths:
 
 - All-symbol basic quotes: the worker polls Dhan Market Quote for all active F&O symbols during
-  the IST market window and caches results in Redis.
+  the IST market window and caches results in Redis. The quote payload is also enriched with NSE
+  option-chain summaries when `LIVE_OPTION_SUMMARY_PROVIDER=nse`.
 - Symbol-specific full chain: `GET /api/live/{symbol}/option-chain` fetches Dhan Option Chain
   on demand and caches the chain payload. Successful option-chain fetches are also inserted into
   `live_snapshot` for audit/history.
@@ -62,6 +63,8 @@ Current split:
 4. API read path:
    - `GET /api/live`: latest basic quote payloads for all cached active symbols.
    - `GET /api/live/{symbol}`: latest basic quote payload for one symbol.
+   - `GET /api/symbol/{symbol}/term-structure`: cached EOD term-structure history with the
+     latest live IV/factor/slope row overlaid from Redis when available.
    - `GET /api/live/{symbol}/option-chain`: cached full option chain, fetching Dhan on demand if missing.
    - `POST /api/admin/live-quotes`: manual basic quote refresh.
    - `POST /api/admin/live-snapshot`: manual option-chain snapshot refresh for selected symbols.
@@ -84,6 +87,16 @@ Historical contract IV/Greeks are still recalculated internally from NSE bhavcop
 Black-Scholes-Merton because historical Dhan Greeks are not available from the live snapshot API.
 Dhan Greeks are consumed only for live snapshots and should not be mixed into historical
 backtests unless a broker-provided historical chain source is added.
+
+The live quote payload overlays NSE option-chain IV analytics onto the latest EOD baseline:
+
+- `iv_30`, `iv_60`, and `iv_90` are recomputed from live ATM IV across the 30/60/90 expiry hints.
+- `fwdv_3060`, `fwdfct_3060`, `fev_30`, and `iv_slope_3060` reuse the same formula helpers as the
+  EOD pipeline.
+- EOD values are preserved as `eod_iv_30`, `eod_iv_60`, `eod_iv_90`, `eod_fwdv_3060`,
+  `eod_fwdfct_3060`, `eod_fev_30`, and `eod_iv_slope_3060` whenever live values are present.
+- Source markers such as `iv_term_structure_source='nse:option-chain-v3'` and
+  `forward_analytics_source='nse:option-chain-v3'` identify live overlays.
 
 DhanHQ's Expired Options Data API is the planned external validator for historical IV. It exposes
 expired option OHLC, IV, OI, volume, strike, and spot for up to the last five years, with up to

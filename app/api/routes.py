@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import date
+import json
+from datetime import date, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from redis.asyncio import Redis
@@ -17,6 +19,17 @@ from app.sources.rates import IndiaRiskFreeRateClient
 
 router = APIRouter()
 
+ERROR_LOG_SORT_COLUMNS = {
+    "created_at": "created_at",
+    "trade_date": "trade_date",
+    "id": "id",
+    "task_name": "task_name",
+    "symbol": "symbol",
+    "source": "source",
+    "error_type": "error_type",
+    "resolved": "resolved",
+}
+
 
 async def repository() -> MarketRepository:
     return MarketRepository(await get_pool())
@@ -30,6 +43,148 @@ async def cache(settings: Settings = Depends(get_settings)) -> CacheService:
 async def health(repo: MarketRepository = Depends(repository)) -> dict:
     latest = await repo.latest_trade_date()
     return {"ok": True, "latest_trade_date": latest}
+
+
+@router.get("/admin/error-logs")
+async def error_logs(
+    limit: int = Query(default=50, ge=1, le=500, description="Rows per page"),
+    offset: int = Query(default=0, ge=0, description="Row offset for pagination"),
+    search: str = Query(default="", description="Search task, symbol, source, type, and details"),
+    task_name: str = Query(default="", description="Comma-separated task names"),
+    symbol: str = Query(default="", description="Comma-separated symbols"),
+    source: str = Query(default="", description="Comma-separated sources"),
+    error_type: str = Query(default="", description="Comma-separated error types"),
+    resolved: bool | None = Query(default=None),
+    trade_date_min: date | None = Query(default=None),
+    trade_date_max: date | None = Query(default=None),
+    created_at_min: datetime | None = Query(default=None),
+    created_at_max: datetime | None = Query(default=None),
+    sort_by: str = Query(default="created_at"),
+    sort_dir: str = Query(default="desc"),
+    repo: MarketRepository = Depends(repository),
+) -> dict:
+    where_parts = ["TRUE"]
+    params: list[Any] = []
+    idx = 1
+
+    if search.strip():
+        where_parts.append(
+            f"""(
+                task_name ILIKE ${idx}
+                OR symbol ILIKE ${idx}
+                OR source ILIKE ${idx}
+                OR error_type ILIKE ${idx}
+                OR error_details::text ILIKE ${idx}
+                OR trade_date::text ILIKE ${idx}
+                OR created_at::text ILIKE ${idx}
+            )"""
+        )
+        params.append(f"%{search.strip()}%")
+        idx += 1
+
+    for column, raw_value, transform in [
+        ("task_name", task_name, None),
+        ("symbol", symbol, str.upper),
+        ("source", source, None),
+        ("error_type", error_type, None),
+    ]:
+        values = _csv_filter_values(raw_value, transform)
+        if values:
+            where_parts.append(f"{column} = ANY(${idx}::text[])")
+            params.append(values)
+            idx += 1
+
+    if resolved is not None:
+        where_parts.append(f"resolved = ${idx}")
+        params.append(resolved)
+        idx += 1
+
+    if trade_date_min is not None:
+        where_parts.append(f"trade_date >= ${idx}")
+        params.append(trade_date_min)
+        idx += 1
+    if trade_date_max is not None:
+        where_parts.append(f"trade_date <= ${idx}")
+        params.append(trade_date_max)
+        idx += 1
+    if created_at_min is not None:
+        where_parts.append(f"created_at >= ${idx}")
+        params.append(created_at_min)
+        idx += 1
+    if created_at_max is not None:
+        where_parts.append(f"created_at <= ${idx}")
+        params.append(created_at_max)
+        idx += 1
+
+    sort_column = ERROR_LOG_SORT_COLUMNS.get(sort_by)
+    if sort_column is None:
+        raise HTTPException(status_code=400, detail="invalid sort_by")
+    direction = sort_dir.lower()
+    if direction not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="invalid sort_dir")
+
+    where_clause = " AND ".join(where_parts)
+    total = await repo.pool.fetchval(
+        f"SELECT COUNT(*) FROM error_log WHERE {where_clause}",
+        *params,
+    )
+    rows = await repo.pool.fetch(
+        f"""
+        SELECT id, task_name, symbol, trade_date, source, error_type,
+               error_details::text AS error_details_json,
+               created_at, resolved
+        FROM error_log
+        WHERE {where_clause}
+        ORDER BY {sort_column} {direction.upper()} NULLS LAST, id DESC
+        LIMIT ${idx} OFFSET ${idx + 1}
+        """,
+        *params,
+        limit,
+        offset,
+    )
+
+    data = []
+    for row in rows:
+        item = dict(row)
+        item["error_details"] = _json_field(item.pop("error_details_json"))
+        data.append(item)
+
+    return {
+        "total": int(total or 0),
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(data) < int(total or 0),
+        "sort": {"by": sort_by, "dir": direction},
+        "filters": {
+            "search": search.strip() or None,
+            "task_name": _csv_filter_values(task_name),
+            "symbol": _csv_filter_values(symbol, str.upper),
+            "source": _csv_filter_values(source),
+            "error_type": _csv_filter_values(error_type),
+            "resolved": resolved,
+            "trade_date_min": trade_date_min,
+            "trade_date_max": trade_date_max,
+            "created_at_min": created_at_min,
+            "created_at_max": created_at_max,
+        },
+        "data": data,
+    }
+
+
+def _csv_filter_values(value: str, transform=None) -> list[str]:
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    if transform:
+        values = [transform(item) for item in values]
+    return values
+
+
+def _json_field(value: str | None) -> Any:
+    if value is None:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 @router.get("/sectors")
@@ -493,43 +648,89 @@ async def symbol_term_structure(
     cache_key = f"term_structure:{symbol.upper()}:{days}"
     cached = await cache_service.get_json(cache_key)
     if cached is not None:
-        return cached
-    rows = await repo.pool.fetch(
-        """
-        WITH ranked AS (
-            SELECT trade_date,
-                   iv_30::float, iv_60::float, iv_90::float,
-                   dte_30, dte_60, dte_90,
-                   expiry_30d, expiry_60d, expiry_90d,
-                   fwdv_3060::float, fwdfct_3060::float, iv_slope_3060::float,
-                   ROUND(
-                       (PERCENT_RANK() OVER (ORDER BY fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
-                   )::float AS fwdfct_3060_percentile,
-                   ROUND(
-                       (PERCENT_RANK() OVER (ORDER BY iv_slope_3060 NULLS FIRST) * 100)::numeric, 2
-                   )::float AS slope_percentile
-            FROM symbol_daily_metrics
-            WHERE symbol = $1
+        result = cached
+    else:
+        rows = await repo.pool.fetch(
+            """
+            WITH ranked AS (
+                SELECT trade_date,
+                       iv_30::float, iv_60::float, iv_90::float,
+                       dte_30, dte_60, dte_90,
+                       expiry_30d, expiry_60d, expiry_90d,
+                       fwdv_3060::float, fwdfct_3060::float, iv_slope_3060::float,
+                       ROUND(
+                           (PERCENT_RANK() OVER (ORDER BY fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
+                       )::float AS fwdfct_3060_percentile,
+                       ROUND(
+                           (PERCENT_RANK() OVER (ORDER BY iv_slope_3060 NULLS FIRST) * 100)::numeric, 2
+                       )::float AS slope_percentile
+                FROM symbol_daily_metrics
+                WHERE symbol = $1
+                ORDER BY trade_date DESC
+                LIMIT $2
+            )
+            SELECT * FROM ranked
             ORDER BY trade_date DESC
-            LIMIT $2
+            """,
+            symbol.upper(),
+            days,
         )
-        SELECT * FROM ranked
-        ORDER BY trade_date DESC
-        """,
-        symbol.upper(),
-        days,
-    )
 
-    series = [dict(r) for r in reversed(rows)]
-    current = series[-1] if series else None
+        series = [dict(r) for r in reversed(rows)]
+        current = series[-1] if series else None
 
-    result = {
-        "symbol": symbol.upper(),
+        result = {
+            "symbol": symbol.upper(),
+            "current": current,
+            "history": series,
+        }
+        await cache_service.set_json(cache_key, result)
+
+    live = await cache_service.get_live(symbol)
+    return _overlay_live_term_structure(result, live)
+
+
+def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
+    if live.get("iv_term_structure_source") != "nse:option-chain-v3":
+        return result
+
+    current = dict(result.get("current") or {})
+    live_keys = [
+        "iv_30",
+        "iv_60",
+        "iv_90",
+        "dte_30",
+        "dte_60",
+        "dte_90",
+        "expiry_30d",
+        "expiry_60d",
+        "expiry_90d",
+        "fwdv_3060",
+        "fwdfct_3060",
+        "fev_30",
+        "iv_slope_3060",
+        "iv_term_structure_source",
+        "forward_analytics_source",
+        "iv_slope_3060_source",
+        "live_iv_term_structure",
+    ]
+    for key in live_keys:
+        if key in live:
+            current[key] = live[key]
+    current["is_live"] = True
+    current["snapshot_time"] = live.get("snapshot_time")
+
+    history = [dict(item) for item in result.get("history", [])]
+    if history:
+        history[-1] = {**history[-1], **current}
+    else:
+        history.append(current)
+
+    return {
+        **result,
         "current": current,
-        "history": series,
+        "history": history,
     }
-    await cache_service.set_json(cache_key, result)
-    return result
 
 
 @router.get("/symbol/{symbol}/result-moves")

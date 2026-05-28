@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time
+from datetime import date, datetime, time
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from redis.asyncio import Redis
@@ -9,6 +10,12 @@ from redis.asyncio import Redis
 from app.core.config import Settings
 from app.db.repository import MarketRepository
 from app.services.cache import CacheService
+from app.services.calculations import (
+    constant_maturity_iv,
+    forward_factor,
+    forward_volatility,
+    iv_slope,
+)
 from app.sources.dhan import (
     DhanOptionChainClient,
     normalize_market_quotes,
@@ -133,17 +140,18 @@ async def _fetch_and_store_dhan_live_quotes(
     raw = await client.market_quote(request)
     quotes = normalize_market_quotes(reverse, raw)
     baseline = await repo.live_baseline(selected)
+    option_summaries = await _fetch_live_option_summaries(settings, selected, baseline)
     cache = CacheService(redis)
     now = datetime.now(IST)
     ttl = _live_cache_ttl(settings)
     payloads = []
     for symbol, quote in quotes.items():
-        payload = {
-            **baseline.get(symbol, {}),
-            **quote,
-            "snapshot_time": now.isoformat(),
-            "quote_type": "basic",
-        }
+        payload = _live_quote_payload(
+            baseline.get(symbol, {}),
+            quote,
+            option_summaries.get(symbol),
+            now,
+        )
         await cache.set_live(symbol, payload, ttl=ttl)
         payloads.append(payload)
     payloads.sort(key=lambda row: row["symbol"])
@@ -183,26 +191,7 @@ async def _fetch_and_store_yahoo_live_quotes(
             missing.append(symbol)
             continue
         base = baseline.get(symbol, {})
-        payload = {
-            **base,
-            **quote,
-            "snapshot_time": now.isoformat(),
-            "quote_type": "basic",
-        }
-        option_summary = option_summaries.get(symbol)
-        if option_summary:
-            if base.get("avg_option_volume") is not None:
-                payload["eod_avg_option_volume"] = base.get("avg_option_volume")
-            payload.update(option_summary)
-            payload["avg_option_volume"] = option_summary["live_option_volume"]
-            payload["avg_option_volume_source"] = option_summary["live_option_volume_source"]
-            payload["avg_option_volume_kind"] = option_summary["live_option_volume_kind"]
-        elif base.get("avg_option_volume") is not None:
-            payload["avg_option_volume_source"] = "symbol_daily_metrics"
-        if base.get("avg_option_volume") is not None:
-            payload.setdefault("avg_option_volume_kind", "eod_total_contracts_all_strikes")
-        if base.get("iv_30") is not None:
-            payload["iv_30_source"] = "symbol_daily_metrics"
+        payload = _live_quote_payload(base, quote, option_summaries.get(symbol), now)
         await cache.set_live(symbol, payload, ttl=ttl)
         payloads.append(payload)
     payloads.sort(key=lambda row: row["symbol"])
@@ -228,7 +217,14 @@ async def _fetch_live_option_summaries(
         raise ValueError(
             f"Unsupported LIVE_OPTION_SUMMARY_PROVIDER: {settings.live_option_summary_provider}"
         )
-    expiry_hints = {symbol: baseline.get(symbol, {}).get("expiry_30d") for symbol in symbols}
+    expiry_hints = {
+        symbol: {
+            "expiry_30d": baseline.get(symbol, {}).get("expiry_30d"),
+            "expiry_60d": baseline.get(symbol, {}).get("expiry_60d"),
+            "expiry_90d": baseline.get(symbol, {}).get("expiry_90d"),
+        }
+        for symbol in symbols
+    }
     client = NSEOptionChainClient(
         settings.source_retry_attempts,
         settings.source_retry_base_delay_seconds,
@@ -278,3 +274,149 @@ def _parse_time(value: str) -> time:
 
 def _live_cache_ttl(settings: Settings) -> int:
     return max(1, int(settings.live_cache_ttl_seconds))
+
+
+def _live_quote_payload(
+    base: dict[str, Any],
+    quote: dict[str, Any],
+    option_summary: dict[str, Any] | None,
+    now: datetime,
+) -> dict[str, Any]:
+    payload = {
+        **base,
+        **quote,
+        "snapshot_time": now.isoformat(),
+        "quote_type": "basic",
+    }
+
+    if option_summary:
+        _preserve_eod_values(
+            payload,
+            base,
+            [
+                "avg_option_volume",
+                "iv_30",
+                "iv_60",
+                "iv_90",
+                "fwdv_3060",
+                "fwdfct_3060",
+                "fev_30",
+                "iv_slope_3060",
+            ],
+        )
+        payload.update(option_summary)
+        payload["avg_option_volume"] = option_summary["live_option_volume"]
+        payload["avg_option_volume_source"] = option_summary["live_option_volume_source"]
+        payload["avg_option_volume_kind"] = option_summary["live_option_volume_kind"]
+        payload.update(_live_forward_metrics(option_summary, now.date()))
+    elif base.get("avg_option_volume") is not None:
+        payload["avg_option_volume_source"] = "symbol_daily_metrics"
+
+    if base.get("avg_option_volume") is not None:
+        payload.setdefault("avg_option_volume_kind", "eod_total_contracts_all_strikes")
+    for key in ("iv_30", "iv_60", "iv_90"):
+        if base.get(key) is not None:
+            payload.setdefault(f"{key}_source", "symbol_daily_metrics")
+    if base.get("fwdfct_3060") is not None:
+        payload.setdefault("forward_analytics_source", "symbol_daily_metrics")
+    if base.get("iv_slope_3060") is not None:
+        payload.setdefault("iv_slope_3060_source", "symbol_daily_metrics")
+    return payload
+
+
+def _preserve_eod_values(payload: dict[str, Any], base: dict[str, Any], keys: list[str]) -> None:
+    for key in keys:
+        if base.get(key) is not None:
+            payload[f"eod_{key}"] = base.get(key)
+
+
+def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> dict[str, Any]:
+    terms = _live_iv_terms(option_summary, trade_date)
+    if not terms:
+        return {}
+
+    iv30 = _constant_maturity_from_terms(terms, 30)
+    iv60 = _constant_maturity_from_terms(terms, 60)
+    iv90 = _constant_maturity_from_terms(terms, 90)
+    fwdv = forward_volatility(iv30, iv60, 30, 60)
+    metrics: dict[str, Any] = {
+        "iv_30": iv30,
+        "iv_60": iv60,
+        "iv_90": iv90,
+        "fwdv_3060": fwdv,
+        "fwdfct_3060": forward_factor(iv30, fwdv),
+        "fev_30": fwdv,
+        "iv_slope_3060": iv_slope(iv30, iv60, 30, 60),
+        "iv_term_structure_source": "nse:option-chain-v3",
+        "forward_analytics_source": "nse:option-chain-v3",
+        "iv_slope_3060_source": "nse:option-chain-v3",
+        "live_iv_term_structure": [
+            {"tenor": 30, "iv": iv30},
+            {"tenor": 60, "iv": iv60},
+            {"tenor": 90, "iv": iv90},
+        ],
+    }
+    for key in ("iv_30", "iv_60", "iv_90"):
+        if metrics.get(key) is not None:
+            metrics[f"{key}_source"] = "nse:option-chain-v3"
+
+    for index, tenor in enumerate((30, 60, 90)):
+        if index < len(terms):
+            metrics[f"expiry_{tenor}d"] = terms[index]["expiry_date"]
+            metrics[f"dte_{tenor}"] = terms[index]["dte"]
+    return metrics
+
+
+def _live_iv_terms(option_summary: dict[str, Any], trade_date: date) -> list[dict[str, Any]]:
+    raw_terms = option_summary.get("live_iv_terms") or [
+        {
+            "expiry": option_summary.get("live_option_expiry"),
+            "expiry_date": option_summary.get("live_option_expiry_date"),
+            "atm_iv": option_summary.get("live_atm_iv"),
+        }
+    ]
+    terms = []
+    for item in raw_terms:
+        expiry_date = _coerce_date(item.get("expiry_date") or item.get("expiry"))
+        atm_iv_value = _coerce_float(item.get("atm_iv"))
+        if expiry_date is None or atm_iv_value is None or atm_iv_value <= 0:
+            continue
+        dte = (expiry_date - trade_date).days
+        if dte <= 0:
+            continue
+        terms.append({"expiry_date": expiry_date, "dte": dte, "iv": atm_iv_value})
+    return sorted(terms, key=lambda item: (item["dte"], item["expiry_date"]))
+
+
+def _constant_maturity_from_terms(terms: list[dict[str, Any]], target_dte: int) -> float | None:
+    exact = next((item["iv"] for item in terms if item["dte"] == target_dte), None)
+    if exact is not None:
+        return exact
+    below = [item for item in terms if item["dte"] < target_dte]
+    above = [item for item in terms if item["dte"] > target_dte]
+    if below and above:
+        near = max(below, key=lambda item: item["dte"])
+        far = min(above, key=lambda item: item["dte"])
+        return constant_maturity_iv(near["iv"], near["dte"], far["iv"], far["dte"], target_dte)
+    return min(terms, key=lambda item: abs(item["dte"] - target_dte))["iv"]
+
+
+def _coerce_date(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

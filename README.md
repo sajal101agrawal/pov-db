@@ -72,12 +72,16 @@ It refreshes from Yahoo Finance quotes on cache miss, stores the result in Redis
 tries NSE `option-chain-v3` for live all-strike CE+PE option volume and overlays that into
 `avg_option_volume` with `avg_option_volume_source='nse:option-chain-v3'`; if NSE is unavailable,
 the latest local EOD metric is returned with `avg_option_volume_source='symbol_daily_metrics'`.
-`live_atm_iv` is included when the NSE option-chain response has usable ATM IV. NSE option-summary
-requests are throttled by `LIVE_OPTION_SUMMARY_MIN_INTERVAL_SECONDS` (default `0.25`) with low
-concurrency and exponential backoff; persistent `403`/`429` responses stop the current NSE summary
-batch and leave the endpoint on EOD fallback data. `GET /api/live/{symbol}` uses the same
-cache/refresh path for one symbol. Dhan credentials are only needed for the optional full
-option-chain route, `GET /api/live/{symbol}/option-chain`.
+`live_atm_iv` is included when the NSE option-chain response has usable ATM IV. The same live
+summary also refreshes the forward-volatility inputs derived from IV: `iv_30`, `iv_60`, `iv_90`,
+`fwdv_3060`, `fwdfct_3060`, `fev_30`, and `iv_slope_3060`; EOD values are preserved under
+`eod_*` keys when live values are overlaid. `/api/symbol/{symbol}/term-structure` keeps the
+historical series cached but overlays the latest live IV/factor/slope row at read time. NSE
+option-summary requests are throttled by `LIVE_OPTION_SUMMARY_MIN_INTERVAL_SECONDS` (default
+`0.25`) with low concurrency and exponential backoff; persistent `403`/`429` responses stop the
+current NSE summary batch and leave the endpoint on EOD fallback data. `GET /api/live/{symbol}`
+uses the same cache/refresh path for one symbol. Dhan credentials are only needed for the optional
+full option-chain route, `GET /api/live/{symbol}/option-chain`.
 
 ## Result Events And Upcoming Earnings
 
@@ -87,6 +91,14 @@ with `event_type='RESULT'` and `source='nse:event-calendar'`.
 Upcoming earnings dates are refreshed from Yahoo Finance's earnings calendar and stored with
 `source='yahoo:earnings-calendar'`. Only Yahoo's `Earnings Date` field is used, so dividend
 dates and other corporate actions are not stored as result events.
+
+## Admin Error Logs
+
+`GET /api/admin/error-logs` returns paginated rows from `error_log` for operational screens.
+It supports `limit`, `offset`, `search`, comma-separated `task_name`, `symbol`, `source`,
+`error_type`, `resolved`, `trade_date_min/max`, `created_at_min/max`, `sort_by`, and `sort_dir`.
+Valid sort fields are `created_at`, `trade_date`, `id`, `task_name`, `symbol`, `source`,
+`error_type`, and `resolved`.
 
 `scripts/daily_update.py` refreshes both sources on every ETL run unless `--skip-events` is
 passed. To force only the result-event refresh on a weekend or market holiday, run:
