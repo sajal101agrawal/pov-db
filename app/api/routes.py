@@ -187,6 +187,18 @@ def _json_field(value: str | None) -> Any:
         return value
 
 
+def _float_or_none(value: Any) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _date_to_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, date | datetime):
+        return value.isoformat()
+    return str(value)
+
+
 @router.get("/sectors")
 async def sectors(
     repo: MarketRepository = Depends(repository),
@@ -362,7 +374,8 @@ async def all_symbols_dashboard(
     if is_nifty100.strip() == "true":
         where_parts.append("su.is_nifty100 = TRUE")
 
-    needs_ev_filter = has_result.strip() or result_date_min.strip() or result_date_max.strip()
+    needs_has_result = has_result.strip()
+    needs_date_range = result_date_min.strip() or result_date_max.strip()
 
     if has_result.strip() == "yes":
         where_parts.append("ev_filter.event_date IS NOT NULL")
@@ -370,7 +383,7 @@ async def all_symbols_dashboard(
         where_parts.append("ev_filter.event_date IS NULL")
 
     if result_date_min.strip():
-        where_parts.append(f"ev_filter.event_date >= ${idx}::date")
+        where_parts.append(f"ev_date_filter.event_date >= ${idx}::date")
         try:
             params.append(date.fromisoformat(result_date_min.strip()))
         except ValueError as exc:
@@ -378,7 +391,7 @@ async def all_symbols_dashboard(
         idx += 1
 
     if result_date_max.strip():
-        where_parts.append(f"ev_filter.event_date <= ${idx}::date")
+        where_parts.append(f"ev_date_filter.event_date <= ${idx}::date")
         try:
             params.append(date.fromisoformat(result_date_max.strip()))
         except ValueError as exc:
@@ -415,8 +428,22 @@ async def all_symbols_dashboard(
     where_clause = " AND ".join(where_parts)
 
     ev_filter_lateral = ""
-    if needs_ev_filter:
+    if needs_has_result:
         ev_filter_lateral = """
+        LEFT JOIN LATERAL (
+            SELECT event_date
+            FROM events
+            WHERE symbol = sdm.symbol
+              AND event_type = 'RESULT'
+              AND event_date >= CURRENT_DATE
+              AND event_date <= CURRENT_DATE + INTERVAL '30 days'
+            ORDER BY event_date ASC
+            LIMIT 1
+        ) ev_filter ON TRUE"""
+
+    ev_date_filter_lateral = ""
+    if needs_date_range:
+        ev_date_filter_lateral = """
         LEFT JOIN LATERAL (
             SELECT event_date
             FROM events
@@ -425,7 +452,7 @@ async def all_symbols_dashboard(
               AND event_date >= CURRENT_DATE
             ORDER BY event_date ASC
             LIMIT 1
-        ) ev_filter ON TRUE"""
+        ) ev_date_filter ON TRUE"""
 
     limit_param = idx
     offset_param = idx + 1
@@ -450,7 +477,7 @@ async def all_symbols_dashboard(
                        'symbol_type', su.symbol_type,
                        'current_price', eq.close,
                        'result_date', ev.event_date,
-                       'result_event', CASE WHEN ev.event_date IS NOT NULL THEN TRUE ELSE FALSE END,
+                       'result_event', CASE WHEN ev.event_date IS NOT NULL AND ev.event_date <= CURRENT_DATE + INTERVAL '30 days' THEN TRUE ELSE FALSE END,
                        'upcoming_events', COALESCE(evs.upcoming_events, '[]'::jsonb)
                    ) AS payload
             FROM latest_metrics sdm
@@ -487,7 +514,7 @@ async def all_symbols_dashboard(
                     LIMIT 8
                 ) upcoming
             ) evs ON TRUE
-            {ev_filter_lateral}
+            {ev_filter_lateral}{ev_date_filter_lateral}
             WHERE {where_clause}
         )
         SELECT payload, COUNT(*) OVER() AS total
@@ -520,118 +547,176 @@ async def symbol_volatility_cone(
 ) -> dict:
     """
     Volatility cone — historical RV percentile bands for each time window.
-    Returns min/p10/p25/median/p75/p90/max for rv_10, rv_20, rv_30, rv_60, rv_90,
-    plus the current (latest) realized vol for each window.
+    Returns min/p10/p25/median/p75/p90/max for rv_10, rv_20, rv_30, rv_60, rv_90.
+    For 30/60/90 tenors, current is the current IV reference plotted against those bands.
     """
-    cache_key = f"vol_cone:{symbol.upper()}:{lookback_days}"
+    cache_key = f"vol_cone:v2:{symbol.upper()}:{lookback_days}"
     cached = await cache_service.get_json(cache_key)
     if cached is not None:
-        return cached
-    rows = await repo.pool.fetch(
-        """
-        WITH history AS (
-            SELECT rv_10, rv_20, rv_30, rv_60, rv_90
-            FROM symbol_daily_metrics
-            WHERE symbol = $1
-              AND trade_date >= (SELECT MAX(trade_date) FROM symbol_daily_metrics WHERE symbol = $1)
-                                - ($2 * INTERVAL '1 day')
-        ),
-        latest AS (
-            SELECT rv_10, rv_20, rv_30, rv_60, rv_90
-            FROM symbol_daily_metrics
-            WHERE symbol = $1
-            ORDER BY trade_date DESC
-            LIMIT 1
+        result = cached
+    else:
+        rows = await repo.pool.fetch(
+            """
+            WITH history AS (
+                SELECT rv_10, rv_20, rv_30, rv_60, rv_90
+                FROM symbol_daily_metrics
+                WHERE symbol = $1
+                  AND trade_date >= (SELECT MAX(trade_date) FROM symbol_daily_metrics WHERE symbol = $1)
+                                    - ($2 * INTERVAL '1 day')
+            )
+            SELECT
+                -- Percentile bands
+                percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_10) AS rv10_min,
+                percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_10) AS rv10_p10,
+                percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_10) AS rv10_p25,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_10) AS rv10_median,
+                percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_10) AS rv10_p75,
+                percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_10) AS rv10_p90,
+                percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_10) AS rv10_max,
+
+                percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_20) AS rv20_min,
+                percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_20) AS rv20_p10,
+                percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_20) AS rv20_p25,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_20) AS rv20_median,
+                percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_20) AS rv20_p75,
+                percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_20) AS rv20_p90,
+                percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_20) AS rv20_max,
+
+                percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_30) AS rv30_min,
+                percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_30) AS rv30_p10,
+                percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_30) AS rv30_p25,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_30) AS rv30_median,
+                percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_30) AS rv30_p75,
+                percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_30) AS rv30_p90,
+                percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_30) AS rv30_max,
+
+                percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_60) AS rv60_min,
+                percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_60) AS rv60_p10,
+                percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_60) AS rv60_p25,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_60) AS rv60_median,
+                percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_60) AS rv60_p75,
+                percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_60) AS rv60_p90,
+                percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_60) AS rv60_max,
+
+                percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_90) AS rv90_min,
+                percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_90) AS rv90_p10,
+                percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_90) AS rv90_p25,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_90) AS rv90_median,
+                percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_90) AS rv90_p75,
+                percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_90) AS rv90_p90,
+                percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_90) AS rv90_max,
+
+                COUNT(*) FILTER (WHERE rv_10 IS NOT NULL) AS sample_count
+            FROM history
+            """,
+            symbol.upper(),
+            lookback_days,
         )
-        SELECT
-            -- Percentile bands
-            percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_10) AS rv10_min,
-            percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_10) AS rv10_p10,
-            percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_10) AS rv10_p25,
-            percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_10) AS rv10_median,
-            percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_10) AS rv10_p75,
-            percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_10) AS rv10_p90,
-            percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_10) AS rv10_max,
 
-            percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_20) AS rv20_min,
-            percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_20) AS rv20_p10,
-            percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_20) AS rv20_p25,
-            percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_20) AS rv20_median,
-            percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_20) AS rv20_p75,
-            percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_20) AS rv20_p90,
-            percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_20) AS rv20_max,
+        if not rows or rows[0]["sample_count"] == 0:
+            raise HTTPException(status_code=404, detail="No volatility data for symbol")
 
-            percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_30) AS rv30_min,
-            percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_30) AS rv30_p10,
-            percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_30) AS rv30_p25,
-            percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_30) AS rv30_median,
-            percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_30) AS rv30_p75,
-            percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_30) AS rv30_p90,
-            percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_30) AS rv30_max,
+        r = dict(rows[0])
 
-            percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_60) AS rv60_min,
-            percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_60) AS rv60_p10,
-            percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_60) AS rv60_p25,
-            percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_60) AS rv60_median,
-            percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_60) AS rv60_p75,
-            percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_60) AS rv60_p90,
-            percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_60) AS rv60_max,
+        latest = await repo.pool.fetchrow(
+            """
+            SELECT rv_10::float, rv_20::float, rv_30::float, rv_60::float, rv_90::float,
+                   iv_30::float, iv_60::float, iv_90::float,
+                   dte_30, dte_60, dte_90,
+                   expiry_30d, expiry_60d, expiry_90d,
+                   trade_date
+            FROM symbol_daily_metrics WHERE symbol = $1 ORDER BY trade_date DESC LIMIT 1
+            """,
+            symbol.upper(),
+        )
+        latest_reference = dict(latest) if latest else {}
 
-            percentile_cont(0.00) WITHIN GROUP (ORDER BY rv_90) AS rv90_min,
-            percentile_cont(0.10) WITHIN GROUP (ORDER BY rv_90) AS rv90_p10,
-            percentile_cont(0.25) WITHIN GROUP (ORDER BY rv_90) AS rv90_p25,
-            percentile_cont(0.50) WITHIN GROUP (ORDER BY rv_90) AS rv90_median,
-            percentile_cont(0.75) WITHIN GROUP (ORDER BY rv_90) AS rv90_p75,
-            percentile_cont(0.90) WITHIN GROUP (ORDER BY rv_90) AS rv90_p90,
-            percentile_cont(1.00) WITHIN GROUP (ORDER BY rv_90) AS rv90_max,
-
-            COUNT(*) FILTER (WHERE rv_10 IS NOT NULL) AS sample_count
-        FROM history
-        """,
-        symbol.upper(),
-        lookback_days,
-    )
-
-    if not rows or rows[0]["sample_count"] == 0:
-        raise HTTPException(status_code=404, detail="No volatility data for symbol")
-
-    r = dict(rows[0])
-
-    latest = await repo.pool.fetchrow(
-        """
-        SELECT rv_10::float, rv_20::float, rv_30::float, rv_60::float, rv_90::float, trade_date
-        FROM symbol_daily_metrics WHERE symbol = $1 ORDER BY trade_date DESC LIMIT 1
-        """,
-        symbol.upper(),
-    )
-
-    def _window(prefix: str) -> dict:
-        return {
-            "min": float(r[f"{prefix}_min"]) if r[f"{prefix}_min"] is not None else None,
-            "p10": float(r[f"{prefix}_p10"]) if r[f"{prefix}_p10"] is not None else None,
-            "p25": float(r[f"{prefix}_p25"]) if r[f"{prefix}_p25"] is not None else None,
-            "median": float(r[f"{prefix}_median"]) if r[f"{prefix}_median"] is not None else None,
-            "p75": float(r[f"{prefix}_p75"]) if r[f"{prefix}_p75"] is not None else None,
-            "p90": float(r[f"{prefix}_p90"]) if r[f"{prefix}_p90"] is not None else None,
-            "max": float(r[f"{prefix}_max"]) if r[f"{prefix}_max"] is not None else None,
-            "current": float(latest[prefix.replace("rv", "rv_")]) if latest and latest[prefix.replace("rv", "rv_")] is not None else None,
+        cone = {
+            "rv_10": _volatility_cone_window(r, latest_reference, "rv10", 10),
+            "rv_20": _volatility_cone_window(r, latest_reference, "rv20", 20),
+            "rv_30": _volatility_cone_window(r, latest_reference, "rv30", 30),
+            "rv_60": _volatility_cone_window(r, latest_reference, "rv60", 60),
+            "rv_90": _volatility_cone_window(r, latest_reference, "rv90", 90),
         }
+        result = {
+            "symbol": symbol.upper(),
+            "sample_count": r["sample_count"],
+            "lookback_days": lookback_days,
+            "as_of": _date_to_string(latest_reference.get("trade_date")),
+            "current_reference_source": "symbol_daily_metrics",
+            "x_axis_dtes": _volatility_cone_x_axis_dtes(cone),
+            "cone": cone,
+        }
+        await cache_service.set_json(cache_key, result)
 
-    result = {
-        "symbol": symbol.upper(),
-        "sample_count": r["sample_count"],
-        "lookback_days": lookback_days,
-        "as_of": str(latest["trade_date"]) if latest else None,
-        "cone": {
-            "rv_10": _window("rv10"),
-            "rv_20": _window("rv20"),
-            "rv_30": _window("rv30"),
-            "rv_60": _window("rv60"),
-            "rv_90": _window("rv90"),
-        },
+    live = await cache_service.get_live(symbol)
+    return _overlay_live_volatility_cone(result, live)
+
+
+def _volatility_cone_window(stats: dict[str, Any], latest: dict[str, Any], prefix: str, window_days: int) -> dict:
+    rv_key = prefix.replace("rv", "rv_")
+    iv_key = f"iv_{window_days}" if window_days in (30, 60, 90) else None
+    dte_key = f"dte_{window_days}" if window_days in (30, 60, 90) else None
+    expiry_key = f"expiry_{window_days}d" if window_days in (30, 60, 90) else None
+    current_rv = _float_or_none(latest.get(rv_key))
+    current_iv = _float_or_none(latest.get(iv_key)) if iv_key else None
+
+    return {
+        "min": _float_or_none(stats.get(f"{prefix}_min")),
+        "p10": _float_or_none(stats.get(f"{prefix}_p10")),
+        "p25": _float_or_none(stats.get(f"{prefix}_p25")),
+        "median": _float_or_none(stats.get(f"{prefix}_median")),
+        "p75": _float_or_none(stats.get(f"{prefix}_p75")),
+        "p90": _float_or_none(stats.get(f"{prefix}_p90")),
+        "max": _float_or_none(stats.get(f"{prefix}_max")),
+        "current": current_iv if current_iv is not None else current_rv,
+        "current_iv": current_iv,
+        "current_rv": current_rv,
+        "current_source": "iv" if current_iv is not None else "rv",
+        "window_days": window_days,
+        "target_dte": window_days,
+        "dte": latest.get(dte_key) if dte_key and latest.get(dte_key) is not None else window_days,
+        "expiry": _date_to_string(latest.get(expiry_key)) if expiry_key else None,
     }
-    await cache_service.set_json(cache_key, result)
-    return result
+
+
+def _volatility_cone_x_axis_dtes(cone: dict[str, dict]) -> dict[str, int | None]:
+    return {key: window.get("dte") for key, window in cone.items()}
+
+
+def _overlay_live_volatility_cone(result: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
+    if live.get("iv_term_structure_source") != "nse:option-chain-v3":
+        return result
+
+    cone = {key: dict(value) for key, value in result.get("cone", {}).items()}
+    for tenor in (30, 60, 90):
+        key = f"rv_{tenor}"
+        if key not in cone:
+            continue
+
+        current_iv = _float_or_none(live.get(f"iv_{tenor}"))
+        if current_iv is not None:
+            cone[key]["current"] = current_iv
+            cone[key]["current_iv"] = current_iv
+            cone[key]["current_source"] = "iv"
+            cone[key]["current_iv_source"] = live.get("iv_term_structure_source")
+
+        dte = live.get(f"dte_{tenor}")
+        if dte is not None:
+            cone[key]["dte"] = dte
+
+        expiry = live.get(f"expiry_{tenor}d")
+        if expiry is not None:
+            cone[key]["expiry"] = _date_to_string(expiry)
+
+    return {
+        **result,
+        "current_reference_source": live.get("iv_term_structure_source"),
+        "is_live": True,
+        "snapshot_time": live.get("snapshot_time"),
+        "x_axis_dtes": _volatility_cone_x_axis_dtes(cone),
+        "cone": cone,
+    }
 
 
 @router.get("/symbol/{symbol}/term-structure")
