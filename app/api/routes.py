@@ -307,6 +307,7 @@ FILTERABLE_NUMERIC = {
     "avg_option_volume": "sdm.avg_option_volume",
     "avg_straddle_pnl":      "sa.avg_straddle_pnl",
     "avg_straddle_pnl_pct":  "sa.avg_straddle_pnl_pct",
+    "avg_earnings_pnl":      "sa.avg_earnings_pnl",
     "vrp_win_rate":           "sa.vrp_win_rate",
     "avg_vrp_4y":             "sa.avg_vrp_4y",
     "max_loss":               "sa.max_loss",
