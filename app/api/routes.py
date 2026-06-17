@@ -384,7 +384,7 @@ async def all_symbols_dashboard(
         where_parts.append("ev_filter.event_date IS NULL")
 
     if result_date_min.strip():
-        where_parts.append(f"ev_date_filter.event_date >= ${idx}::date")
+        where_parts.append(f"(ev_date_filter.event_date IS NULL OR ev_date_filter.event_date >= ${idx}::date)")
         try:
             params.append(date.fromisoformat(result_date_min.strip()))
         except ValueError as exc:
