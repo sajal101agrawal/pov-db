@@ -316,6 +316,42 @@ FILTERABLE_NUMERIC = {
 }
 
 
+LIVE_OVERLAY_NUMERIC_FIELDS = {
+    "avg_option_volume",
+    "current_price",
+    "fwdv_3060",
+    "fwdfct_3060",
+    "iv_30",
+    "iv_60",
+    "iv_90",
+    "iv_slope_3060",
+    "rv_30",
+    "vrp",
+}
+
+
+def _overlay_live_dashboard_payload(payload: dict[str, Any], live_by_symbol: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    symbol = str(payload.get("symbol") or "").upper()
+    live = live_by_symbol.get(symbol)
+    return {**payload, **live} if live else payload
+
+
+def _matches_numeric_filters(payload: dict[str, Any], numeric_filters: dict[str, dict[str, float]]) -> bool:
+    for field, bounds in numeric_filters.items():
+        value = payload.get(field)
+        if value is None:
+            return False
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return False
+        if "min" in bounds and number < bounds["min"]:
+            return False
+        if "max" in bounds and number > bounds["max"]:
+            return False
+    return True
+
+
 @router.get("/all-dashboard")
 async def all_symbols_dashboard(
     limit: int = Query(default=50, ge=1, le=200, description="Rows per page"),
@@ -351,6 +387,7 @@ async def all_symbols_dashboard(
     # Build dynamic WHERE conditions
     where_parts: list[str] = ["(su.is_active = TRUE OR su.is_active IS NULL)"]
     params: list = []
+    post_numeric_filters: dict[str, dict[str, float]] = {}
     idx = 1  # asyncpg uses $1, $2, ...
 
     if search.strip():
@@ -384,7 +421,7 @@ async def all_symbols_dashboard(
         where_parts.append("ev_filter.event_date IS NULL")
 
     if result_date_min.strip():
-        where_parts.append(f"(ev_date_filter.event_date IS NULL OR ev_date_filter.event_date >= ${idx}::date)")
+        where_parts.append(f"ev_date_filter.event_date >= ${idx}::date")
         try:
             params.append(date.fromisoformat(result_date_min.strip()))
         except ValueError as exc:
@@ -415,13 +452,25 @@ async def all_symbols_dashboard(
                 if col is None:
                     continue
                 if isinstance(bounds, dict):
+                    parsed_bounds: dict[str, float] = {}
                     if bounds.get("min") is not None:
-                        where_parts.append(f"{col} >= ${idx}")
-                        params.append(float(bounds["min"]))
-                        idx += 1
+                        parsed_bounds["min"] = float(bounds["min"])
                     if bounds.get("max") is not None:
+                        parsed_bounds["max"] = float(bounds["max"])
+                    if not parsed_bounds:
+                        continue
+
+                    if field in LIVE_OVERLAY_NUMERIC_FIELDS:
+                        post_numeric_filters[field] = parsed_bounds
+                        continue
+
+                    if "min" in parsed_bounds:
+                        where_parts.append(f"{col} >= ${idx}")
+                        params.append(parsed_bounds["min"])
+                        idx += 1
+                    if "max" in parsed_bounds:
                         where_parts.append(f"{col} <= ${idx}")
-                        params.append(float(bounds["max"]))
+                        params.append(parsed_bounds["max"])
                         idx += 1
         except Exception:
             pass
@@ -455,8 +504,11 @@ async def all_symbols_dashboard(
             LIMIT 1
         ) ev_date_filter ON TRUE"""
 
-    limit_param = idx
-    offset_param = idx + 1
+    pagination_clause = ""
+    if not post_numeric_filters:
+        limit_param = idx
+        offset_param = idx + 1
+        pagination_clause = f"LIMIT ${limit_param} OFFSET ${offset_param}"
 
     full_query = f"""
         WITH latest_metrics AS (
@@ -521,18 +573,39 @@ async def all_symbols_dashboard(
         SELECT payload, COUNT(*) OVER() AS total
         FROM base
         ORDER BY symbol_sort
-        LIMIT ${limit_param} OFFSET ${offset_param}
+        {pagination_clause}
     """
 
-    all_params = params + [limit, offset]
+    all_params = params if post_numeric_filters else params + [limit, offset]
     rows = await repo.pool.fetch(full_query, *all_params)
 
-    total = rows[0]["total"] if rows else 0
+    payloads = [_json.loads(r["payload"]) for r in rows]
+    if post_numeric_filters:
+        live_payloads = await cache_service.get_live_symbols()
+        live_by_symbol = {
+            str(item.get("symbol") or "").upper(): item
+            for item in live_payloads
+            if item.get("symbol")
+        }
+        payloads = [
+            _overlay_live_dashboard_payload(payload, live_by_symbol)
+            for payload in payloads
+        ]
+        payloads = [
+            payload
+            for payload in payloads
+            if _matches_numeric_filters(payload, post_numeric_filters)
+        ]
+        total = len(payloads)
+        payloads = payloads[offset: offset + limit]
+    else:
+        total = rows[0]["total"] if rows else 0
+
     result = {
         "total": int(total),
         "limit": limit,
         "offset": offset,
-        "data": [_json.loads(r["payload"]) for r in rows],
+        "data": payloads,
     }
     if not has_any_filter:
         await cache_service.set_json(f"all_dashboard:{limit}:{offset}", result)
