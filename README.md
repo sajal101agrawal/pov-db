@@ -42,6 +42,18 @@ python scripts/recompute_rsi_metrics.py
 python scripts/recompute_straddle_pnl.py
 ```
 
+Sync NSE corporate actions or preview/execute the all-symbol RV/VRP production remediation:
+
+```bash
+python scripts/sync_corporate_actions.py --start YYYY-MM-DD --end YYYY-MM-DD
+python scripts/backfill_corporate_action_metrics.py
+python scripts/backfill_corporate_action_metrics.py --execute
+```
+
+The preview is read-only. See
+[corporate-action-rv-remediation.md](docs/operations/corporate-action-rv-remediation.md) before
+running the production backfill.
+
 Run one daily EOD update after the NSE bhavcopy is published:
 
 ```bash
@@ -98,6 +110,11 @@ with `event_type='RESULT'` and `source='nse:event-calendar'`.
 Upcoming earnings dates are refreshed from Yahoo Finance's earnings calendar and stored with
 `source='yahoo:earnings-calendar'`. Only Yahoo's `Earnings Date` field is used, so dividend
 dates and other corporate actions are not stored as result events.
+
+Price-adjusting events are stored separately in `corporate_actions`. They are sourced from NSE and
+used to adjust the in-memory OHLC window for Yang-Zhang RV/RSI without modifying raw
+`equity_historical` prices. `GET /api/symbol/{symbol}/corporate-actions` exposes their factor and
+verification status.
 
 ## Admin Error Logs
 

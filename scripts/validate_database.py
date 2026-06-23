@@ -43,8 +43,13 @@ RANGE_CHECKS = {
     "symbol_universe.missing_loaded_symbols": "SELECT COUNT(*) FROM (SELECT DISTINCT symbol FROM options_historical UNION SELECT DISTINCT symbol FROM equity_historical) x LEFT JOIN symbol_universe su USING (symbol) WHERE su.symbol IS NULL",
     "symbol_universe.active_fno_missing_metadata": "SELECT COUNT(*) FROM symbol_universe WHERE is_active AND symbol_type = 'individual_securities' AND (company_name IS NULL OR isin IS NULL)",
     "events.invalid_type": "SELECT COUNT(*) FROM events WHERE event_type IS NULL OR event_type = ''",
+    "corporate_actions.invalid_factor": "SELECT COUNT(*) FROM corporate_actions WHERE adjustment_status = 'VERIFIED' AND (price_multiplier IS NULL OR price_multiplier <= 0)",
+    "symbol_daily_metrics.legacy_rv_calculation": "SELECT COUNT(*) FROM symbol_daily_metrics WHERE rv_calculation_version < 2 OR rv_data_status = 'LEGACY_UNVERIFIED'",
+    "symbol_daily_metrics.clean_raw_rv_mismatch": "SELECT COUNT(*) FROM symbol_daily_metrics WHERE rv_data_status = 'CLEAN' AND (COALESCE(ABS(rv_10 - rv_10_raw), 0) > 0.0000001 OR COALESCE(ABS(rv_20 - rv_20_raw), 0) > 0.0000001 OR COALESCE(ABS(rv_30 - rv_30_raw), 0) > 0.0000001)",
+    "symbol_daily_metrics.invalid_vrp_signal": "SELECT COUNT(*) FROM symbol_daily_metrics WHERE vrp_signal_enabled IS DISTINCT FROM (vrp IS NOT NULL AND rv_data_status IN ('CLEAN', 'CORPORATE_ACTION_ADJUSTED'))",
     "symbol_aggregates.win_rate_formula": "WITH calc AS (SELECT symbol, ROUND(100.0 * COUNT(*) FILTER (WHERE is_winner) / NULLIF(COUNT(*), 0), 2) AS value FROM straddle_pnl WHERE skip_reason IS NULL GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE ABS(sa.win_rate - calc.value) > 0.01",
-    "symbol_aggregates.vrp_win_rate_formula": "WITH calc AS (SELECT symbol, ROUND(100.0 * COUNT(*) FILTER (WHERE vrp > 0) / NULLIF(COUNT(vrp), 0), 2) AS value FROM symbol_daily_metrics GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE sa.vrp_win_rate IS DISTINCT FROM calc.value AND COALESCE(ABS(sa.vrp_win_rate - calc.value), 999) > 0.01",
+    "symbol_aggregates.vrp_win_rate_formula": "WITH calc AS (SELECT symbol, ROUND(100.0 * COUNT(*) FILTER (WHERE vrp_signal_enabled AND vrp > 0) / NULLIF(COUNT(vrp) FILTER (WHERE vrp_signal_enabled), 0), 2) AS value FROM symbol_daily_metrics GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE sa.vrp_win_rate IS DISTINCT FROM calc.value AND COALESCE(ABS(sa.vrp_win_rate - calc.value), 999) > 0.01",
+    "symbol_aggregates.vrp_calculation_version": "WITH calc AS (SELECT symbol, MIN(rv_calculation_version) AS value FROM symbol_daily_metrics GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE sa.vrp_calculation_version IS DISTINCT FROM calc.value",
     "symbol_aggregates.avg_pnl_formula": "WITH calc AS (SELECT symbol, AVG(pnl) AS value FROM straddle_pnl WHERE skip_reason IS NULL GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE ABS(sa.avg_straddle_pnl - calc.value) > 0.01",
     "symbol_aggregates.avg_pnl_pct_formula": "WITH calc AS (SELECT symbol, AVG(pnl / NULLIF(total_entry, 0)) AS value FROM straddle_pnl WHERE skip_reason IS NULL GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE COALESCE(ABS(sa.avg_straddle_pnl_pct - calc.value), 0) > 0.0001",
     "symbol_aggregates.max_profit_formula": "WITH calc AS (SELECT symbol, MAX(pnl) AS value FROM straddle_pnl WHERE skip_reason IS NULL GROUP BY symbol) SELECT COUNT(*) FROM symbol_aggregates sa JOIN calc USING (symbol) WHERE ABS(sa.max_profit - calc.value) > 0.01",
@@ -107,6 +112,19 @@ DIAGNOSTIC_QUERIES = {
             WHERE event_type = 'RESULT'
             GROUP BY symbol
         ) ev USING (symbol)
+    """,
+    "corporate_actions.pending_factors": """
+        SELECT action_type, COUNT(*) AS rows, MIN(ex_date) AS first_ex_date, MAX(ex_date) AS last_ex_date
+        FROM corporate_actions
+        WHERE adjustment_status = 'PENDING_FACTOR'
+        GROUP BY action_type
+        ORDER BY rows DESC, action_type
+    """,
+    "metrics.rv_adjustment_statuses": """
+        SELECT rv_data_status, COUNT(*) AS rows, MIN(trade_date) AS first_date, MAX(trade_date) AS last_date
+        FROM symbol_daily_metrics
+        GROUP BY rv_data_status
+        ORDER BY rows DESC, rv_data_status
     """,
 }
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 import sys
 
@@ -13,7 +13,7 @@ from app.db.pool import close_pool, get_pool
 from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
 from app.sources.rates import IndiaRiskFreeRateClient
-from app.services.factory import build_bhavcopy_source
+from app.services.factory import build_bhavcopy_source, build_corporate_actions_source
 
 
 async def main() -> None:
@@ -21,6 +21,7 @@ async def main() -> None:
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--symbols", required=True, help="Comma-separated symbols to recompute.")
+    parser.add_argument("--skip-action-sync", action="store_true")
     parser.add_argument("--progress-every", type=int, default=25)
     args = parser.parse_args()
 
@@ -38,6 +39,14 @@ async def main() -> None:
     symbols = [symbol.strip().upper() for symbol in args.symbols.split(",") if symbol.strip()]
 
     try:
+        if not args.skip_action_sync:
+            actions = await build_corporate_actions_source(settings).fetch_actions(
+                start - timedelta(days=365), end, symbols
+            )
+            await repo.upsert_corporate_actions(actions)
+        await repo.resolve_corporate_action_factors(
+            start=start - timedelta(days=365), end=end, symbols=symbols
+        )
         dates = [
             row["trade_date"]
             for row in await repo.pool.fetch(

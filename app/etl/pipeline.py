@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
 from datetime import date, timedelta
+import json
 from typing import Any
 
 from app.core.config import Settings
@@ -18,14 +18,17 @@ from app.services.calculations import (
     implied_volatility_bisection,
     iv_slope,
     ratio,
-    rsi,
     smoothed_skew,
     straddle_pnl,
     volatility_risk_premium,
     years_to_expiry,
-    yang_zhang_realized_vol,
+)
+from app.services.corporate_actions import (
+    USABLE_RV_STATUSES,
+    calculate_price_series_metrics,
 )
 from app.sources.bhavcopy import BhavcopySource
+from app.sources.nse_corporate_actions import NSECorporateActionsClient
 from app.sources.rates import IndiaRiskFreeRateClient
 
 
@@ -36,21 +39,34 @@ class Pipeline:
         repository: MarketRepository,
         bhavcopy_source: BhavcopySource,
         rates: IndiaRiskFreeRateClient,
+        corporate_actions_source: NSECorporateActionsClient | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.bhavcopy_source = bhavcopy_source
         self.rates = rates
+        self.corporate_actions_source = corporate_actions_source
 
     async def run_for_date(
         self,
         trade_date: date,
         symbols: list[str] | None = None,
         finalize: bool = True,
+        sync_corporate_actions: bool = True,
     ) -> dict[str, Any]:
-        fo_rows, cm_rows = await asyncio.gather(
+        action_sync_start = trade_date - timedelta(days=180)
+        action_sync_end = trade_date + timedelta(days=45)
+        action_task = (
+            self.corporate_actions_source.fetch_actions(
+                action_sync_start, action_sync_end, symbols
+            )
+            if sync_corporate_actions and self.corporate_actions_source is not None
+            else asyncio.sleep(0, result=[])
+        )
+        fo_rows, cm_rows, corporate_actions = await asyncio.gather(
             self.bhavcopy_source.fetch_fo(trade_date),
             self.bhavcopy_source.fetch_cm(trade_date),
+            action_task,
         )
         if symbols:
             allowed = {s.upper() for s in symbols}
@@ -61,11 +77,23 @@ class Pipeline:
         equity_count = await self.repository.upsert_equity_rows(cm_rows)
         await self.repository.upsert_discovered_symbols(_discovered_symbols(fo_rows, cm_rows))
 
+        symbols_for_metrics = sorted({row.symbol for row in fo_rows})
+        if corporate_actions:
+            allowed_actions = set(symbols_for_metrics)
+            corporate_actions = [
+                action for action in corporate_actions if action["symbol"] in allowed_actions
+            ]
+            await self.repository.upsert_corporate_actions(corporate_actions)
+        action_resolution = await self.repository.resolve_corporate_action_factors(
+            start=action_sync_start if sync_corporate_actions else trade_date,
+            end=trade_date,
+            symbols=symbols_for_metrics,
+        )
+
         rates = await self.rates.fetch_91d_rate(trade_date - timedelta(days=10), trade_date + timedelta(days=1))
         await self.repository.upsert_interest_rates(rates)
         await self.repository.refresh_expiry_calendar(trade_date)
 
-        symbols_for_metrics = sorted({row.symbol for row in fo_rows})
         if self.settings.pipeline_symbol_limit:
             symbols_for_metrics = symbols_for_metrics[: self.settings.pipeline_symbol_limit]
 
@@ -90,6 +118,8 @@ class Pipeline:
             "options_rows": option_count,
             "equity_rows": equity_count,
             "symbols": len(symbols_for_metrics),
+            "corporate_actions": len(corporate_actions),
+            "corporate_action_factors": action_resolution,
             "finalized": finalize,
         }
 
@@ -103,6 +133,9 @@ class Pipeline:
         spot_open = spot_row.get("open") or spot_close
         if not spot_close:
             return
+        corporate_actions = await self.repository.corporate_actions_window(
+            symbol, ohlc[0]["trade_date"], trade_date
+        )
 
         chain = await self.repository.option_chain(symbol, trade_date)
         if not chain:
@@ -153,9 +186,26 @@ class Pipeline:
         await self.repository.update_contract_derived(derived)
 
         fresh_chain = await self.repository.option_chain(symbol, trade_date)
-        metrics = self._compute_metric(symbol, trade_date, spot_open, spot_close, ohlc, fresh_chain, atm_strike)
+        metrics = self._compute_metric(
+            symbol,
+            trade_date,
+            spot_open,
+            spot_close,
+            ohlc,
+            corporate_actions,
+            fresh_chain,
+            atm_strike,
+        )
         lagged_iv30 = await self.repository.lagged_iv30(symbol, trade_date, 20)
-        metrics["vrp"] = volatility_risk_premium(lagged_iv30, metrics.get("rv_30"))
+        metrics["vrp"] = (
+            volatility_risk_premium(lagged_iv30, metrics.get("rv_30"))
+            if metrics.get("rv_data_status") in USABLE_RV_STATUSES
+            else None
+        )
+        metrics["vrp_signal_enabled"] = metrics["vrp"] is not None
+        metrics["rv_adjustment_details"] = json.dumps(
+            metrics["rv_adjustment_details"], default=str
+        )
         await self.repository.upsert_daily_metric(metrics)
         await self._compute_straddle(symbol, trade_date, spot_open, spot_close, metrics)
 
@@ -166,6 +216,7 @@ class Pipeline:
         spot_open: float,
         spot_close: float,
         ohlc: list[dict[str, Any]],
+        corporate_actions: list[dict[str, Any]],
         chain: list[dict[str, Any]],
         atm_strike: float,
     ) -> dict[str, Any]:
@@ -199,16 +250,12 @@ class Pipeline:
         dte30 = (expiry_30 - trade_date).days if expiry_30 else None
         dte60 = (expiry_60 - trade_date).days if expiry_60 else None
         dte90 = (expiry_90 - trade_date).days if expiry_90 else None
-        opens = [row["open"] for row in ohlc if row.get("open")]
-        highs = [row["high"] for row in ohlc if row.get("high")]
-        lows = [row["low"] for row in ohlc if row.get("low")]
-        closes = [row["close"] for row in ohlc if row.get("close")]
-
-        rv10 = _yang_zhang_rv_window(ohlc, trade_date, 10)
-        rv20 = _yang_zhang_rv_window(ohlc, trade_date, 20)
-        rv30 = _yang_zhang_rv_window(ohlc, trade_date, 30)
-        rv60 = _yang_zhang_rv_window(ohlc, trade_date, 60)
-        rv90 = _yang_zhang_rv_window(ohlc, trade_date, 90)
+        price_metrics = calculate_price_series_metrics(ohlc, corporate_actions, trade_date)
+        rv10 = price_metrics["rv_10"]
+        rv20 = price_metrics["rv_20"]
+        rv30 = price_metrics["rv_30"]
+        rv60 = price_metrics["rv_60"]
+        rv90 = price_metrics["rv_90"]
         fwdv = forward_volatility(iv30, iv60, 30, 60)
         skew_expiry = _expiry_closest_to_target(expiries, trade_date, 30)
         skew_chain = [row for row in chain if row["expiry_date"] == skew_expiry]
@@ -238,7 +285,16 @@ class Pipeline:
             "rv_30": rv30,
             "rv_60": rv60,
             "rv_90": rv90,
+            "rv_10_raw": price_metrics["rv_10_raw"],
+            "rv_20_raw": price_metrics["rv_20_raw"],
+            "rv_30_raw": price_metrics["rv_30_raw"],
+            "rv_60_raw": price_metrics["rv_60_raw"],
+            "rv_90_raw": price_metrics["rv_90_raw"],
+            "rv_data_status": price_metrics["rv_data_status"],
+            "rv_adjustment_details": price_metrics["rv_adjustment_details"],
+            "rv_calculation_version": price_metrics["rv_calculation_version"],
             "vrp": None,
+            "vrp_signal_enabled": False,
             "fwdv_3060": fwdv,
             "fwdfct_3060": forward_factor(iv30, fwdv),
             "fev_30": fwdv,
@@ -250,8 +306,8 @@ class Pipeline:
             "iv30_rv30_ratio": ratio(iv30, rv30),
             "iv30_fev30_ratio": ratio(iv30, fwdv),
             "avg_option_volume": _total_option_volume(chain),
-            "daily_rsi": rsi(closes, 14),
-            "weekly_rsi": rsi(_weekly_closes(ohlc), 14),
+            "daily_rsi": price_metrics["daily_rsi"],
+            "weekly_rsi": price_metrics["weekly_rsi"],
         }
 
     async def _compute_straddle(
@@ -362,31 +418,6 @@ def _expiry_closest_to_target(expiries: list[date], trade_date: date, target_dte
     if not candidates:
         return None
     return min(candidates, key=lambda expiry: abs((expiry - trade_date).days - target_dte))
-
-
-def _yang_zhang_rv_window(ohlc: list[dict[str, Any]], trade_date: date, window: int) -> float | None:
-    rows = [
-        row
-        for row in ohlc
-        if row.get("open")
-        and row.get("high")
-        and row.get("low")
-        and row.get("close")
-        and row.get("trade_date")
-    ]
-    if len(rows) < window + 1:
-        return None
-    selected = rows[-(window + 1) :]
-    oldest_date = selected[0]["trade_date"]
-    # Avoid computing fake RV from sparse bootstrap samples separated by months.
-    if (trade_date - oldest_date).days > int(window * 2.5) + 10:
-        return None
-    return yang_zhang_realized_vol(
-        [row["open"] for row in selected],
-        [row["high"] for row in selected],
-        [row["low"] for row in selected],
-        [row["close"] for row in selected],
-    )
 
 
 def _weekly_closes(ohlc: list[dict[str, Any]]) -> list[float]:

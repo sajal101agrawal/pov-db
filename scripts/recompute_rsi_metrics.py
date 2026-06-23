@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+from app.core.config import get_settings
 from app.db.pool import close_pool, get_pool
 from app.db.repository import MarketRepository
-from app.etl.pipeline import _weekly_closes
-from app.services.calculations import rsi
+from app.services.corporate_actions import calculate_price_series_metrics
+from app.services.factory import build_corporate_actions_source
 
 
 async def main() -> None:
@@ -19,6 +20,7 @@ async def main() -> None:
     parser.add_argument("--start")
     parser.add_argument("--end")
     parser.add_argument("--symbols")
+    parser.add_argument("--skip-action-sync", action="store_true")
     parser.add_argument("--progress-every", type=int, default=500)
     args = parser.parse_args()
 
@@ -51,13 +53,29 @@ async def main() -> None:
 
     updated = 0
     try:
+        if rows and not args.skip_action_sync:
+            action_start = (start or rows[0]["trade_date"]) - timedelta(days=365)
+            action_end = end or rows[-1]["trade_date"]
+            settings = get_settings()
+            actions = await build_corporate_actions_source(settings).fetch_actions(
+                action_start, action_end, symbols
+            )
+            await repo.upsert_corporate_actions(actions)
+            await repo.resolve_corporate_action_factors(
+                start=action_start, end=action_end, symbols=symbols
+            )
         for idx, row in enumerate(rows, start=1):
             symbol = row["symbol"]
             trade_date = row["trade_date"]
-            ohlc = await repo.equity_ohlc_window(symbol, trade_date, limit=500)
-            closes = [item["close"] for item in ohlc if item.get("close")]
-            daily_rsi = rsi(closes, 14)
-            weekly_rsi = rsi(_weekly_closes(ohlc), 14)
+            ohlc = await repo.equity_ohlc_window(symbol, trade_date, limit=100)
+            if not ohlc:
+                continue
+            actions = await repo.corporate_actions_window(
+                symbol, ohlc[0]["trade_date"], trade_date
+            )
+            price_metrics = calculate_price_series_metrics(ohlc, actions, trade_date)
+            daily_rsi = price_metrics["daily_rsi"]
+            weekly_rsi = price_metrics["weekly_rsi"]
             await repo.pool.execute(
                 """
                 UPDATE symbol_daily_metrics

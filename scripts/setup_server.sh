@@ -21,8 +21,9 @@ fi
 
 mkdir -p data
 docker compose up -d --build postgres redis
+docker compose build api worker
 docker compose run --rm api python scripts/apply_schema_updates.py
-docker compose up -d --build api worker
+docker compose up -d api worker
 
 echo "waiting for API health..."
 for _ in $(seq 1 60); do

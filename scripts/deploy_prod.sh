@@ -10,8 +10,19 @@ if [[ ! -f .env ]]; then
 fi
 
 docker compose -p pov-db -f docker-compose.prod.yml up -d postgres redis
+docker compose -p pov-db -f docker-compose.prod.yml build api worker
 docker compose -p pov-db -f docker-compose.prod.yml run --rm api python scripts/apply_schema_updates.py
-docker compose -p pov-db -f docker-compose.prod.yml up -d --build api worker
+
+if [[ "${RUN_CORPORATE_ACTION_BACKFILL:-0}" == "1" ]]; then
+  docker compose -p pov-db -f docker-compose.prod.yml run --rm api \
+    python scripts/backfill_corporate_action_metrics.py --execute
+else
+  echo "corporate-action backfill not run; legacy RV/VRP remains API-disabled until remediation"
+  echo "preview: docker compose -p pov-db -f docker-compose.prod.yml run --rm api python scripts/backfill_corporate_action_metrics.py"
+fi
+
+docker compose -p pov-db -f docker-compose.prod.yml exec -T redis redis-cli FLUSHDB >/dev/null
+docker compose -p pov-db -f docker-compose.prod.yml up -d api worker
 
 if [[ "${INSTALL_CRON:-1}" == "1" ]]; then
   COMPOSE_ARGS="-p pov-db -f docker-compose.prod.yml" scripts/install_daily_etl_cron.sh

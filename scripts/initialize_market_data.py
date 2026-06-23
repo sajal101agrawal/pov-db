@@ -13,7 +13,7 @@ from app.core.config import get_settings
 from app.db.pool import close_pool, get_pool
 from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
-from app.services.factory import build_bhavcopy_source
+from app.services.factory import build_bhavcopy_source, build_corporate_actions_source
 from app.sources.nse import NSEArchiveClient
 from app.sources.nse_events import NSECorporateEventsClient
 from app.sources.yahoo_events import YahooEarningsCalendarClient
@@ -126,6 +126,7 @@ async def main() -> None:
         repository=repo,
         bhavcopy_source=build_bhavcopy_source(settings),
         rates=IndiaRiskFreeRateClient(settings.default_risk_free_rate),
+        corporate_actions_source=build_corporate_actions_source(settings),
     )
 
     def emit(record: dict) -> None:
@@ -137,6 +138,23 @@ async def main() -> None:
     try:
         days = business_days(start, end)
         emit({"event": "init_start", "start": start, "end": end, "business_days": len(days), "symbols": symbols or "ALL"})
+        emit({"event": "corporate_actions_sync_start", "start": start, "end": end})
+        corporate_actions = await pipeline.corporate_actions_source.fetch_actions(
+            start, end, symbols
+        )
+        corporate_action_rows = await repo.upsert_corporate_actions(corporate_actions)
+        initial_action_resolution = await repo.resolve_corporate_action_factors(
+            start=start,
+            end=end,
+            symbols=symbols,
+        )
+        emit(
+            {
+                "event": "corporate_actions_sync_done",
+                "rows": corporate_action_rows,
+                "factor_resolution": initial_action_resolution,
+            }
+        )
         for idx, trade_date in enumerate(days, start=1):
             existing = int(
                 await repo.pool.fetchval("SELECT COUNT(*) FROM options_historical WHERE trade_date = $1", trade_date)
@@ -146,7 +164,12 @@ async def main() -> None:
                 emit({"event": "skip_existing", "trade_date": trade_date, "index": idx, "total": len(days), "options": existing})
                 continue
             try:
-                result = await pipeline.run_for_date(trade_date, symbols, finalize=False)
+                result = await pipeline.run_for_date(
+                    trade_date,
+                    symbols,
+                    finalize=False,
+                    sync_corporate_actions=False,
+                )
                 emit({"event": "loaded", "index": idx, "total": len(days), **result})
             except Exception as exc:  # noqa: BLE001 - log and keep the bootstrap resumable
                 await repo.log_error(

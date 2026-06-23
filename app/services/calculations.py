@@ -203,27 +203,31 @@ def yang_zhang_realized_vol(
     highs: Sequence[float],
     lows: Sequence[float],
     closes: Sequence[float],
+    *,
+    max_abs_log_return: float | None = MAX_ABS_RV_LOG_RETURN,
 ) -> float | None:
     n = len(closes)
     if min(len(opens), len(highs), len(lows), n) != n or n < 3:
         return None
     o = np.log(np.asarray(opens, dtype=float))
     h = np.log(np.asarray(highs, dtype=float))
-    l = np.log(np.asarray(lows, dtype=float))
+    low_logs = np.log(np.asarray(lows, dtype=float))
     c = np.log(np.asarray(closes, dtype=float))
-    if not all(np.all(np.isfinite(x)) for x in (o, h, l, c)):
+    if not all(np.all(np.isfinite(x)) for x in (o, h, low_logs, c)):
         return None
 
     overnight = o[1:] - c[:-1]
     open_to_close = c[1:] - o[1:]
     close_to_close = c[1:] - c[:-1]
-    if (
-        np.max(np.abs(overnight)) > MAX_ABS_RV_LOG_RETURN
-        or np.max(np.abs(open_to_close)) > MAX_ABS_RV_LOG_RETURN
-        or np.max(np.abs(close_to_close)) > MAX_ABS_RV_LOG_RETURN
+    if max_abs_log_return is not None and (
+        np.max(np.abs(overnight)) > max_abs_log_return
+        or np.max(np.abs(open_to_close)) > max_abs_log_return
+        or np.max(np.abs(close_to_close)) > max_abs_log_return
     ):
         return None
-    rs = (h[1:] - c[1:]) * (h[1:] - o[1:]) + (l[1:] - c[1:]) * (l[1:] - o[1:])
+    rs = (h[1:] - c[1:]) * (h[1:] - o[1:]) + (low_logs[1:] - c[1:]) * (
+        low_logs[1:] - o[1:]
+    )
     if len(overnight) < 2:
         return None
 

@@ -12,7 +12,7 @@ from app.db.pool import get_pool
 from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
 from app.services.cache import CacheService
-from app.services.factory import build_bhavcopy_source
+from app.services.factory import build_bhavcopy_source, build_corporate_actions_source
 from app.services.live import fetch_and_store_live_quotes, fetch_and_store_live_snapshots
 from app.sources.rates import IndiaRiskFreeRateClient
 
@@ -248,6 +248,22 @@ async def symbol_events(
     return result
 
 
+@router.get("/symbol/{symbol}/corporate-actions")
+async def symbol_corporate_actions(
+    symbol: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> list[dict]:
+    cache_key = f"corporate-actions:{symbol.upper()}:{limit}"
+    cached = await cache_service.get_json(cache_key)
+    if cached is not None:
+        return cached
+    result = await repo.corporate_actions_for_symbol(symbol, limit)
+    await cache_service.set_json(cache_key, result)
+    return result
+
+
 @router.get("/symbol/{symbol}/expiries")
 async def symbol_expiries(
     symbol: str,
@@ -273,7 +289,7 @@ async def symbol_expiries(
 
 
 FILTERABLE_NUMERIC = {
-    "vrp":               "sdm.vrp",
+    "vrp":               "CASE WHEN sdm.vrp_signal_enabled THEN sdm.vrp END",
     "iv_30":             "sdm.iv_30",
     "iv_60":             "sdm.iv_60",
     "iv_90":             "sdm.iv_90",
@@ -283,9 +299,9 @@ FILTERABLE_NUMERIC = {
     "fwdv_3060":         "sdm.fwdv_3060",
     "fwdfct_3060":       "sdm.fwdfct_3060",
     "iv_slope_3060":     "sdm.iv_slope_3060",
-    "rv_10":             "sdm.rv_10",
-    "rv_20":             "sdm.rv_20",
-    "rv_30":             "sdm.rv_30",
+    "rv_10":             "CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_10 END",
+    "rv_20":             "CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_20 END",
+    "rv_30":             "CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_30 END",
     "fev_30":            "sdm.fev_30",
     "smoothed_skew":     "sdm.smoothed_skew",
     "skew_percentile":   "sdm.skew_percentile",
@@ -308,8 +324,8 @@ FILTERABLE_NUMERIC = {
     "avg_straddle_pnl":      "sa.avg_straddle_pnl",
     "avg_straddle_pnl_pct":  "sa.avg_straddle_pnl_pct",
     "avg_earnings_pnl":      "sa.avg_earnings_pnl",
-    "vrp_win_rate":           "sa.vrp_win_rate",
-    "avg_vrp_4y":             "sa.avg_vrp_4y",
+    "vrp_win_rate":           "CASE WHEN sa.vrp_calculation_version >= 2 THEN sa.vrp_win_rate END",
+    "avg_vrp_4y":             "CASE WHEN sa.vrp_calculation_version >= 2 THEN sa.avg_vrp_4y END",
     "max_loss":               "sa.max_loss",
     "max_profit":             "sa.max_profit",
     "current_price":          "eq.close",
@@ -529,6 +545,14 @@ async def all_symbols_dashboard(
                        'is_nifty100', su.is_nifty100,
                        'symbol_type', su.symbol_type,
                        'current_price', eq.close,
+                       'rv_10', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_10 END,
+                       'rv_20', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_20 END,
+                       'rv_30', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_30 END,
+                       'rv_60', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_60 END,
+                       'rv_90', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_90 END,
+                       'vrp', CASE WHEN sdm.vrp_signal_enabled THEN sdm.vrp END,
+                       'avg_vrp_4y', CASE WHEN sa.vrp_calculation_version >= 2 THEN sa.avg_vrp_4y END,
+                       'vrp_win_rate', CASE WHEN sa.vrp_calculation_version >= 2 THEN sa.vrp_win_rate END,
                        'result_date', ev.event_date,
                        'result_event', CASE WHEN ev.event_date IS NOT NULL AND ev.event_date <= CURRENT_DATE + INTERVAL '30 days' THEN TRUE ELSE FALSE END,
                        'upcoming_events', COALESCE(evs.upcoming_events, '[]'::jsonb)
@@ -635,6 +659,7 @@ async def symbol_volatility_cone(
                 SELECT rv_10, rv_20, rv_30, rv_60, rv_90
                 FROM symbol_daily_metrics
                 WHERE symbol = $1
+                  AND rv_calculation_version >= 2
                   AND trade_date >= (SELECT MAX(trade_date) FROM symbol_daily_metrics WHERE symbol = $1)
                                     - ($2 * INTERVAL '1 day')
             )
@@ -699,7 +724,9 @@ async def symbol_volatility_cone(
                    dte_30, dte_60, dte_90,
                    expiry_30d, expiry_60d, expiry_90d,
                    trade_date
-            FROM symbol_daily_metrics WHERE symbol = $1 ORDER BY trade_date DESC LIMIT 1
+            FROM symbol_daily_metrics
+            WHERE symbol = $1 AND rv_calculation_version >= 2
+            ORDER BY trade_date DESC LIMIT 1
             """,
             symbol.upper(),
         )
@@ -1221,6 +1248,7 @@ async def trigger_pipeline(
         repository=repo,
         bhavcopy_source=build_bhavcopy_source(settings),
         rates=IndiaRiskFreeRateClient(default_rate=settings.default_risk_free_rate),
+        corporate_actions_source=build_corporate_actions_source(settings),
     )
     symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
     try:

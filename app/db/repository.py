@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 import asyncpg
 
+from app.services.corporate_actions import derive_price_multiplier
 from app.sources.models import EquityBar, EquityBhavcopyRow, OptionBhavcopyRow
 from app.sources.nse_metadata import SymbolMetadata
 
@@ -74,8 +75,11 @@ class MarketRepository:
                    sdm.iv_30::float,
                    sdm.iv_60::float,
                    sdm.iv_90::float,
-                   sdm.rv_30::float,
-                   sdm.vrp::float,
+                   CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_30::float END AS rv_30,
+                   CASE WHEN sdm.vrp_signal_enabled THEN sdm.vrp::float END AS vrp,
+                   sdm.rv_data_status,
+                   sdm.rv_calculation_version,
+                   sdm.vrp_signal_enabled,
                    sdm.skew_25::float,
                    sdm.fwdv_3060::float,
                    sdm.fwdfct_3060::float,
@@ -348,6 +352,180 @@ class MarketRepository:
                 ],
             )
         return len(items)
+
+    async def upsert_corporate_actions(self, rows: Iterable[dict[str, Any]]) -> int:
+        items = list(rows)
+        if not items:
+            return 0
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO corporate_actions (
+                    symbol, ex_date, record_date, action_type, description, face_value,
+                    price_multiplier, cash_amount, rights_new_shares, rights_held_shares,
+                    subscription_price, adjustment_status, factor_source, source,
+                    source_key, raw_payload
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb)
+                ON CONFLICT (source, source_key)
+                DO UPDATE SET
+                    symbol = EXCLUDED.symbol,
+                    ex_date = EXCLUDED.ex_date,
+                    record_date = EXCLUDED.record_date,
+                    action_type = EXCLUDED.action_type,
+                    description = EXCLUDED.description,
+                    face_value = EXCLUDED.face_value,
+                    price_multiplier = CASE
+                        WHEN corporate_actions.factor_source = 'MANUAL'
+                            THEN corporate_actions.price_multiplier
+                        ELSE EXCLUDED.price_multiplier
+                    END,
+                    cash_amount = EXCLUDED.cash_amount,
+                    rights_new_shares = EXCLUDED.rights_new_shares,
+                    rights_held_shares = EXCLUDED.rights_held_shares,
+                    subscription_price = EXCLUDED.subscription_price,
+                    adjustment_status = CASE
+                        WHEN corporate_actions.factor_source = 'MANUAL'
+                            THEN corporate_actions.adjustment_status
+                        ELSE EXCLUDED.adjustment_status
+                    END,
+                    factor_source = CASE
+                        WHEN corporate_actions.factor_source = 'MANUAL'
+                            THEN corporate_actions.factor_source
+                        ELSE EXCLUDED.factor_source
+                    END,
+                    raw_payload = EXCLUDED.raw_payload,
+                    updated_at = NOW()
+                """,
+                [
+                    (
+                        item["symbol"],
+                        item["ex_date"],
+                        item.get("record_date"),
+                        item["action_type"],
+                        item["description"],
+                        item.get("face_value"),
+                        item.get("price_multiplier"),
+                        item.get("cash_amount"),
+                        item.get("rights_new_shares"),
+                        item.get("rights_held_shares"),
+                        item.get("subscription_price"),
+                        item.get("adjustment_status", "PENDING_FACTOR"),
+                        item.get("factor_source"),
+                        item.get("source", "nse:corporate-actions"),
+                        item["source_key"],
+                        item.get("raw_payload", "{}"),
+                    )
+                    for item in items
+                ],
+            )
+        return len(items)
+
+    async def resolve_corporate_action_factors(
+        self,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+        symbols: list[str] | None = None,
+    ) -> dict[str, int]:
+        rows = await self.pool.fetch(
+            """
+            SELECT ca.*,
+                   prior.close::float AS previous_close,
+                   (
+                       SELECT COUNT(*)
+                       FROM corporate_actions peer
+                       WHERE peer.symbol = ca.symbol
+                         AND peer.ex_date = ca.ex_date
+                         AND peer.adjustment_status != 'IGNORED'
+                   ) AS same_date_action_count
+            FROM corporate_actions ca
+            LEFT JOIN LATERAL (
+                SELECT close
+                FROM equity_historical eh
+                WHERE eh.symbol = ca.symbol
+                  AND eh.trade_date < ca.ex_date
+                  AND eh.close IS NOT NULL
+                ORDER BY eh.trade_date DESC
+                LIMIT 1
+            ) prior ON TRUE
+            WHERE ca.adjustment_status = 'PENDING_FACTOR'
+              AND ($1::date IS NULL OR ca.ex_date >= $1)
+              AND ($2::date IS NULL OR ca.ex_date <= $2)
+              AND ($3::text[] IS NULL OR ca.symbol = ANY($3::text[]))
+            ORDER BY ca.ex_date, ca.symbol, ca.id
+            """,
+            start,
+            end,
+            symbols,
+        )
+        updates: list[tuple[float, str, int]] = []
+        for row in rows:
+            action = dict(row)
+            multiplier, factor_source = derive_price_multiplier(
+                action,
+                action.get("previous_close"),
+                same_date_action_count=int(action.get("same_date_action_count") or 1),
+            )
+            if multiplier is not None and factor_source is not None:
+                updates.append((multiplier, factor_source, int(action["id"])))
+        if updates:
+            await self.pool.executemany(
+                """
+                UPDATE corporate_actions
+                SET price_multiplier = $1,
+                    factor_source = $2,
+                    adjustment_status = 'VERIFIED',
+                    updated_at = NOW()
+                WHERE id = $3 AND adjustment_status = 'PENDING_FACTOR'
+                """,
+                updates,
+            )
+        return {
+            "pending_examined": len(rows),
+            "resolved": len(updates),
+            "still_pending": len(rows) - len(updates),
+        }
+
+    async def corporate_actions_window(
+        self, symbol: str, start: date, end: date
+    ) -> list[dict[str, Any]]:
+        rows = await self.pool.fetch(
+            """
+            SELECT id, symbol, ex_date, record_date, action_type, description,
+                   price_multiplier::float, cash_amount::float,
+                   rights_new_shares::float, rights_held_shares::float,
+                   subscription_price::float, adjustment_status, factor_source, source
+            FROM corporate_actions
+            WHERE symbol = $1
+              AND ex_date > $2
+              AND ex_date <= $3
+              AND adjustment_status != 'IGNORED'
+            ORDER BY ex_date, id
+            """,
+            symbol.upper(),
+            start,
+            end,
+        )
+        return [dict(row) for row in rows]
+
+    async def corporate_actions_for_symbol(
+        self, symbol: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        rows = await self.pool.fetch(
+            """
+            SELECT id, symbol, ex_date, record_date, action_type, description,
+                   price_multiplier::float, cash_amount::float,
+                   adjustment_status, factor_source, source, updated_at, created_at
+            FROM corporate_actions
+            WHERE symbol = $1
+            ORDER BY ex_date DESC, id DESC
+            LIMIT $2
+            """,
+            symbol.upper(),
+            limit,
+        )
+        return [dict(row) for row in rows]
 
     async def delete_future_events_by_source(
         self,
@@ -643,13 +821,18 @@ class MarketRepository:
                            100.0 * percent_rank(cur.iv_90) WITHIN GROUP (ORDER BY h.iv_90)
                            FILTER (WHERE h.iv_90 IS NOT NULL)
                        END AS iv90_pct,
-                       CASE WHEN cur.vrp IS NULL THEN NULL ELSE
+                       CASE
+                           WHEN cur.vrp IS NULL
+                             OR BOOL_OR(h.rv_calculation_version < 2)
+                           THEN NULL
+                           ELSE
                            100.0 * percent_rank(cur.vrp) WITHIN GROUP (ORDER BY h.vrp)
-                           FILTER (WHERE h.vrp IS NOT NULL)
+                           FILTER (WHERE h.vrp IS NOT NULL AND h.vrp_signal_enabled)
                        END AS vrp_pct
                 FROM symbol_daily_metrics cur
                 JOIN LATERAL (
-                    SELECT iv_30, iv_60, iv_90, vrp
+                    SELECT iv_30, iv_60, iv_90, vrp,
+                           vrp_signal_enabled, rv_calculation_version
                     FROM symbol_daily_metrics h
                     WHERE h.symbol = cur.symbol
                       AND h.trade_date <= cur.trade_date
@@ -701,8 +884,13 @@ class MarketRepository:
             metric_daily AS (
                 SELECT
                     symbol,
-                    ROUND(100.0 * COUNT(*) FILTER (WHERE vrp > 0) / NULLIF(COUNT(vrp), 0), 2) AS vrp_win_rate,
-                    AVG(vrp) AS avg_vrp_4y
+                    ROUND(
+                        100.0 * COUNT(*) FILTER (WHERE vrp_signal_enabled AND vrp > 0)
+                        / NULLIF(COUNT(vrp) FILTER (WHERE vrp_signal_enabled), 0),
+                        2
+                    ) AS vrp_win_rate,
+                    AVG(vrp) FILTER (WHERE vrp_signal_enabled) AS avg_vrp_4y,
+                    MIN(rv_calculation_version) AS vrp_calculation_version
                 FROM symbol_daily_metrics
                 GROUP BY symbol
             ),
@@ -785,7 +973,8 @@ class MarketRepository:
                 GROUP BY symbol
             )
             INSERT INTO symbol_aggregates (
-                symbol, win_rate, vrp_win_rate, avg_vrp_4y, avg_straddle_pnl,
+                symbol, win_rate, vrp_win_rate, avg_vrp_4y, vrp_calculation_version,
+                avg_straddle_pnl,
                 avg_straddle_pnl_pct, avg_call_pnl, avg_put_pnl, max_profit, max_loss,
                 historical_iv_crush, implied_result_move, avg_result_move, max_result_move,
                 avg_earnings_pnl, earnings_win_rate, max_earnings_profit, max_earnings_loss,
@@ -796,6 +985,7 @@ class MarketRepository:
                 straddle_daily.win_rate,
                 metric_daily.vrp_win_rate,
                 metric_daily.avg_vrp_4y,
+                metric_daily.vrp_calculation_version,
                 straddle_daily.avg_straddle_pnl,
                 straddle_daily.avg_straddle_pnl_pct,
                 straddle_daily.avg_call_pnl,
@@ -818,6 +1008,7 @@ class MarketRepository:
                 win_rate = EXCLUDED.win_rate,
                 vrp_win_rate = EXCLUDED.vrp_win_rate,
                 avg_vrp_4y = EXCLUDED.avg_vrp_4y,
+                vrp_calculation_version = EXCLUDED.vrp_calculation_version,
                 avg_straddle_pnl = EXCLUDED.avg_straddle_pnl,
                 avg_straddle_pnl_pct = EXCLUDED.avg_straddle_pnl_pct,
                 avg_call_pnl = EXCLUDED.avg_call_pnl,
@@ -847,7 +1038,21 @@ class MarketRepository:
                        'is_nifty50', su.is_nifty50,
                        'is_nifty100', su.is_nifty100,
                        'symbol_type', su.symbol_type
-                   ), '{}'::jsonb) AS payload
+                   ), '{}'::jsonb) ||
+                   jsonb_build_object(
+                       'rv_10', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_10 END,
+                       'rv_20', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_20 END,
+                       'rv_30', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_30 END,
+                       'rv_60', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_60 END,
+                       'rv_90', CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_90 END,
+                       'vrp', CASE WHEN sdm.vrp_signal_enabled THEN sdm.vrp END,
+                       'avg_vrp_4y', CASE
+                           WHEN sa.vrp_calculation_version >= 2 THEN sa.avg_vrp_4y
+                       END,
+                       'vrp_win_rate', CASE
+                           WHEN sa.vrp_calculation_version >= 2 THEN sa.vrp_win_rate
+                       END
+                   ) AS payload
             FROM symbol_daily_metrics sdm
             LEFT JOIN symbol_aggregates sa USING (symbol)
             LEFT JOIN symbol_universe su USING (symbol)
@@ -866,9 +1071,17 @@ class MarketRepository:
                    -- Implied volatility term structure
                    iv_30::float, iv_60::float, iv_90::float,
                    -- Realized volatility (all windows)
-                   rv_10::float, rv_20::float, rv_30::float, rv_60::float, rv_90::float,
+                   CASE WHEN rv_calculation_version >= 2 THEN rv_10::float END AS rv_10,
+                   CASE WHEN rv_calculation_version >= 2 THEN rv_20::float END AS rv_20,
+                   CASE WHEN rv_calculation_version >= 2 THEN rv_30::float END AS rv_30,
+                   CASE WHEN rv_calculation_version >= 2 THEN rv_60::float END AS rv_60,
+                   CASE WHEN rv_calculation_version >= 2 THEN rv_90::float END AS rv_90,
+                   rv_10_raw::float, rv_20_raw::float, rv_30_raw::float,
+                   rv_60_raw::float, rv_90_raw::float,
+                   rv_data_status, rv_adjustment_details, rv_calculation_version,
                    -- Variance risk premium
-                   vrp::float,
+                   CASE WHEN vrp_signal_enabled THEN vrp::float END AS vrp,
+                   vrp_signal_enabled,
                    -- Forward volatility
                    fwdv_3060::float, fev_30::float,
                    -- Skew (all delta levels)

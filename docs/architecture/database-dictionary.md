@@ -87,6 +87,11 @@ Important columns:
 - `expiry_30d/expiry_60d/expiry_90d`: first/second/third monthly exchange-expiry buckets.
 - `dte_30/dte_60/dte_90`: actual calendar days from `trade_date` to the selected expiry.
 - `rv_10/rv_20/rv_30/rv_60/rv_90`: Yang-Zhang realized vol, decimal annualized.
+- `rv_10_raw/.../rv_90_raw`: unadjusted diagnostic Yang-Zhang values.
+- `rv_data_status`: RV30 reliability/adjustment state used by VRP.
+- `rv_adjustment_details`: compact per-window corporate-action and gap diagnostics.
+- `rv_calculation_version`: calculation lineage; version 2 is corporate-action aware.
+- `vrp_signal_enabled`: true only when adjusted RV30 and lagged IV30 are usable.
 - `vrp`: `iv_30(20 trading days earlier) - rv_30(today)`.
 - `fwdv_3060`: synthetic forward volatility between target 30D and 60D maturities.
 - `fwdfct_3060`: `(iv_30 / fwdv_3060) - 1`.
@@ -101,6 +106,17 @@ Expected nulls:
 
 - RV fields are null until enough historical closes exist.
 - VRP is null until current RV30 and lagged IV30 exist.
+
+### `corporate_actions`
+
+Purpose: source-versioned NSE price-adjusting events and verified pre-ex-date OHLC multipliers.
+Ambiguous factors remain `PENDING_FACTOR`; affected canonical RV/VRP is disabled rather than
+silently using raw prices.
+
+### `analytics_backfill_runs` / `analytics_metric_audit`
+
+Purpose: production recomputation lineage and old/new values for materially changed historical
+metrics.
 - Weekly RSI is null until enough weekly closes exist.
 - Percentiles are null when the current value is null. Non-null percentile calculations rank
   against the trailing available non-null observations for the same symbol; null observations
@@ -155,9 +171,11 @@ Purpose: one row per symbol derived from `straddle_pnl` and `symbol_daily_metric
 Daily aggregate formulas:
 
 - `win_rate`: valid daily short-straddle rows with `pnl > 0`, divided by valid daily rows.
-- `vrp_win_rate`: metric rows with non-null `vrp > 0`, divided by non-null `vrp` rows.
-- `avg_vrp_4y`: legacy column name; currently averages all loaded lookback rows. In the
+- `vrp_win_rate`: reliable metric rows with `vrp > 0`, divided by reliable non-null VRP rows.
+- `avg_vrp_4y`: legacy column name; currently averages all reliable loaded lookback rows. In the
   deployment run this is five years because the bootstrap lookback is five years.
+- `vrp_calculation_version`: minimum RV/VRP lineage version included in the aggregate; APIs hide
+  aggregate VRP fields until the full historical series is on version 2.
 - `avg_straddle_pnl`, `avg_call_pnl`, `avg_put_pnl`: rupee averages over valid daily straddle rows.
 - `avg_straddle_pnl_pct`: average `pnl / total_entry` over valid daily straddle rows, stored as a
   decimal ratio (`0.0123` means `1.23%`).

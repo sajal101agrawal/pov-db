@@ -114,7 +114,7 @@ RV is stored as decimal annualized volatility. `0.142` means `14.2%`; it is not 
 
 The pipeline computes `rv_10`, `rv_20`, `rv_30`, `rv_60`, and `rv_90`.
 
-Null policy:
+Corporate-action and null policy:
 
 - `rv_10` needs 11 closes.
 - `rv_20` needs 21 closes.
@@ -122,9 +122,15 @@ Null policy:
 - `rv_60` needs 61 OHLC bars.
 - `rv_90` needs 91 OHLC bars.
 - The bootstrap refuses sparse windows that jump across long date gaps.
-- Split-like discontinuities are treated as invalid RV windows. If any close-to-close,
-  overnight, or open-to-close log return exceeds `ln(3)`, RV for that window is stored `NULL`
-  rather than allowing unadjusted corporate-action price jumps to pollute VRP/rankings.
+- Raw NSE OHLC remains unchanged in `equity_historical`.
+- Every RV window loads corporate actions whose ex-date crosses that window and applies the
+  verified pre-ex-date multiplier to open, high, low, and close before Yang-Zhang is evaluated.
+- `rv_10/20/30/60/90` are canonical adjusted values. `rv_*_raw` retains the unadjusted diagnostic
+  calculation.
+- A pending action factor or unexplained adjusted overnight gap above 20% makes that window
+  unreliable. Canonical RV is `NULL`; VRP signal generation is disabled.
+- `rv_data_status` describes the RV30/VRP window. Per-window details are stored in
+  `rv_adjustment_details`.
 
 ## VRP
 
@@ -216,8 +222,8 @@ Null observations are excluded from percentile, average, ratio, and win-rate den
 - For a non-null current value, the trailing history uses only non-null observations for that
   metric on that symbol.
 - Aggregate PnL averages use only valid `straddle_pnl` rows where `skip_reason IS NULL`.
-- Aggregate VRP averages and `vrp_win_rate` use all non-null VRP metric rows for the symbol,
-  not only dates where the daily straddle row is valid.
+- Aggregate VRP averages and `vrp_win_rate` use non-null rows where
+  `vrp_signal_enabled=true`, not only dates where the daily straddle row is valid.
 - Result-event averages are `NULL` when no loaded result-event rows overlap the symbol history.
 - Ratios return `NULL` when the denominator is `NULL`, zero, or negative.
 

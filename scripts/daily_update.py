@@ -13,7 +13,7 @@ from app.core.config import get_settings
 from app.db.pool import close_pool, get_pool
 from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
-from app.services.factory import build_bhavcopy_source
+from app.services.factory import build_bhavcopy_source, build_corporate_actions_source
 from app.services.s3_dump import upload_etl_dump
 from app.sources.nse import NSEArchiveClient
 from app.sources.nse_events import NSECorporateEventsClient
@@ -38,6 +38,7 @@ async def main() -> None:
         repository=repo,
         bhavcopy_source=build_bhavcopy_source(settings),
         rates=IndiaRiskFreeRateClient(settings.default_risk_free_rate),
+        corporate_actions_source=build_corporate_actions_source(settings),
     )
     try:
         result = await pipeline.run_for_date(trade_date, symbols, finalize=True)

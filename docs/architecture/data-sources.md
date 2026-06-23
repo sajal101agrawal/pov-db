@@ -109,3 +109,16 @@ every active F&O symbol. The service supplements NSE with Yahoo Finance's earnin
 
 The dashboard exposes the next upcoming result date as `result_date` and a fuller
 `upcoming_events` array from `GET /api/all-dashboard`.
+
+## Corporate Actions
+
+Price-adjusting actions are sourced separately from
+[NSE Corporate Actions](https://www.nseindia.com/companies-listing/corporate-filings-actions) and stored
+in `corporate_actions`. This includes bonuses, splits/consolidations, dividends, rights, mergers,
+demergers, and other capital reorganizations. It is intentionally separate from the result-only
+`events` table because RV adjustment requires ex-date, factor terms, verification status, and raw
+source provenance.
+
+The daily pipeline refreshes a trailing 180-day range. Historical/server initialization and the
+production remediation script sync the requested full range in chunks. Yahoo actions are not used
+as the authoritative factor source because Indian bonus/upcoming-action coverage is incomplete.
