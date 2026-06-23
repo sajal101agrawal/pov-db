@@ -134,6 +134,11 @@ scripts/deploy_prod.sh
 Production deploy applies schema updates, rebuilds API/worker containers, preserves RDS data,
 and installs the daily ETL cron by default. It does not run historical bootstrap on EC2.
 
+After the Forward Factor release, run the one-time historical preview and execute commands from
+[forward-factor-remediation.md](forward-factor-remediation.md). Alternatively set
+`RUN_FORWARD_FACTOR_BACKFILL=1` for the deployment invocation after reviewing the preview. Normal
+daily ETL automatically calculates the new fields and does not need the backfill command.
+
 ## GitHub Actions Deploy
 
 The workflow is `.github/workflows/deploy-ec2.yml`. Required repository secrets:

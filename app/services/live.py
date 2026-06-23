@@ -390,8 +390,16 @@ def _live_quote_payload(
                 "iv_30",
                 "iv_60",
                 "iv_90",
+                "call_iv_30",
+                "call_iv_60",
+                "call_iv_90",
+                "put_iv_30",
+                "put_iv_60",
+                "put_iv_90",
                 "fwdv_3060",
                 "fwdfct_3060",
+                "call_fwdfct_3060",
+                "put_fwdfct_3060",
                 "fev_30",
                 "iv_slope_3060",
             ],
@@ -410,7 +418,11 @@ def _live_quote_payload(
 
     if base.get("avg_option_volume") is not None:
         payload.setdefault("avg_option_volume_kind", "eod_total_contracts_all_strikes")
-    for key in ("iv_30", "iv_60", "iv_90"):
+    for key in (
+        "iv_30", "iv_60", "iv_90",
+        "call_iv_30", "call_iv_60", "call_iv_90",
+        "put_iv_30", "put_iv_60", "put_iv_90",
+    ):
         if base.get(key) is not None:
             payload.setdefault(f"{key}_source", "symbol_daily_metrics")
     if base.get("fwdfct_3060") is not None:
@@ -431,16 +443,32 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
     if not terms:
         return {}
 
-    iv30 = _constant_maturity_from_terms(terms, 30)
-    iv60 = _constant_maturity_from_terms(terms, 60)
-    iv90 = _constant_maturity_from_terms(terms, 90)
+    iv30 = _constant_maturity_from_terms(terms, 30, "iv")
+    iv60 = _constant_maturity_from_terms(terms, 60, "iv")
+    iv90 = _constant_maturity_from_terms(terms, 90, "iv")
+    call_iv30 = _constant_maturity_from_terms(terms, 30, "call_iv")
+    call_iv60 = _constant_maturity_from_terms(terms, 60, "call_iv")
+    call_iv90 = _constant_maturity_from_terms(terms, 90, "call_iv")
+    put_iv30 = _constant_maturity_from_terms(terms, 30, "put_iv")
+    put_iv60 = _constant_maturity_from_terms(terms, 60, "put_iv")
+    put_iv90 = _constant_maturity_from_terms(terms, 90, "put_iv")
     fwdv = forward_volatility(iv30, iv60, 30, 60)
+    call_fwdv = forward_volatility(call_iv30, call_iv60, 30, 60)
+    put_fwdv = forward_volatility(put_iv30, put_iv60, 30, 60)
     metrics: dict[str, Any] = {
         "iv_30": iv30,
         "iv_60": iv60,
         "iv_90": iv90,
+        "call_iv_30": call_iv30,
+        "call_iv_60": call_iv60,
+        "call_iv_90": call_iv90,
+        "put_iv_30": put_iv30,
+        "put_iv_60": put_iv60,
+        "put_iv_90": put_iv90,
         "fwdv_3060": fwdv,
         "fwdfct_3060": forward_factor(iv30, fwdv),
+        "call_fwdfct_3060": forward_factor(call_iv30, call_fwdv),
+        "put_fwdfct_3060": forward_factor(put_iv30, put_fwdv),
         "fev_30": fwdv,
         "iv_slope_3060": iv_slope(iv30, iv60, 30, 60),
         "iv_term_structure_source": "nse:option-chain-v3",
@@ -451,8 +479,31 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
             {"tenor": 60, "iv": iv60},
             {"tenor": 90, "iv": iv90},
         ],
+        "live_call_iv_term_structure": [
+            {"tenor": 30, "iv": call_iv30},
+            {"tenor": 60, "iv": call_iv60},
+            {"tenor": 90, "iv": call_iv90},
+        ],
+        "live_put_iv_term_structure": [
+            {"tenor": 30, "iv": put_iv30},
+            {"tenor": 60, "iv": put_iv60},
+            {"tenor": 90, "iv": put_iv90},
+        ],
     }
-    for key in ("iv_30", "iv_60", "iv_90"):
+    available_factors = [
+        value
+        for value in (
+            metrics["call_fwdfct_3060"],
+            metrics["put_fwdfct_3060"],
+        )
+        if value is not None
+    ]
+    metrics["max_fwdfct_3060"] = max(available_factors) if available_factors else None
+    for key in (
+        "iv_30", "iv_60", "iv_90",
+        "call_iv_30", "call_iv_60", "call_iv_90",
+        "put_iv_30", "put_iv_60", "put_iv_90",
+    ):
         if metrics.get(key) is not None:
             metrics[f"{key}_source"] = "nse:option-chain-v3"
 
@@ -469,35 +520,60 @@ def _live_iv_terms(option_summary: dict[str, Any], trade_date: date) -> list[dic
             "expiry": option_summary.get("live_option_expiry"),
             "expiry_date": option_summary.get("live_option_expiry_date"),
             "atm_iv": option_summary.get("live_atm_iv"),
+            "call_iv": option_summary.get("live_atm_call_iv"),
+            "put_iv": option_summary.get("live_atm_put_iv"),
         }
     ]
     terms = []
     for item in raw_terms:
         expiry_date = _coerce_date(item.get("expiry_date") or item.get("expiry"))
-        atm_iv_value = _coerce_float(item.get("atm_iv"))
-        if expiry_date is None or atm_iv_value is None or atm_iv_value <= 0:
+        atm_iv_value = _positive_float(item.get("atm_iv"))
+        call_iv_value = _positive_float(item.get("call_iv"))
+        put_iv_value = _positive_float(item.get("put_iv"))
+        if expiry_date is None or not any(
+            value is not None for value in (atm_iv_value, call_iv_value, put_iv_value)
+        ):
             continue
         dte = (expiry_date - trade_date).days
         if dte <= 0:
             continue
-        terms.append({"expiry_date": expiry_date, "dte": dte, "iv": atm_iv_value})
+        terms.append(
+            {
+                "expiry_date": expiry_date,
+                "dte": dte,
+                "iv": atm_iv_value,
+                "call_iv": call_iv_value,
+                "put_iv": put_iv_value,
+            }
+        )
     return sorted(terms, key=lambda item: (item["dte"], item["expiry_date"]))
 
 
-def _constant_maturity_from_terms(terms: list[dict[str, Any]], target_dte: int) -> float | None:
-    exact = next((item["iv"] for item in terms if item["dte"] == target_dte), None)
+def _constant_maturity_from_terms(
+    terms: list[dict[str, Any]], target_dte: int, value_key: str = "iv"
+) -> float | None:
+    candidates = [item for item in terms if item.get(value_key) is not None]
+    exact = next(
+        (item[value_key] for item in candidates if item["dte"] == target_dte), None
+    )
     if exact is not None:
         return exact
-    if len(terms) == 1:
-        return terms[0]["iv"] if target_dte <= terms[0]["dte"] else None
-    below = [item for item in terms if item["dte"] < target_dte]
-    above = [item for item in terms if item["dte"] > target_dte]
+    if len(candidates) == 1:
+        return (
+            candidates[0][value_key]
+            if target_dte <= candidates[0]["dte"]
+            else None
+        )
+    below = [item for item in candidates if item["dte"] < target_dte]
+    above = [item for item in candidates if item["dte"] > target_dte]
     if below and above:
         near = max(below, key=lambda item: item["dte"])
         far = min(above, key=lambda item: item["dte"])
-        return constant_maturity_iv(near["iv"], near["dte"], far["iv"], far["dte"], target_dte)
+        return constant_maturity_iv(
+            near[value_key], near["dte"], far[value_key], far["dte"], target_dte
+        )
     if above:
-        return min(above, key=lambda item: item["dte"])["iv"]
+        return min(above, key=lambda item: item["dte"])[value_key]
     return None
 
 
@@ -520,3 +596,8 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _positive_float(value: Any) -> float | None:
+    number = _coerce_float(value)
+    return number if number is not None and number > 0 else None

@@ -75,6 +75,12 @@ class MarketRepository:
                    sdm.iv_30::float,
                    sdm.iv_60::float,
                    sdm.iv_90::float,
+                   sdm.call_iv_30::float,
+                   sdm.call_iv_60::float,
+                   sdm.call_iv_90::float,
+                   sdm.put_iv_30::float,
+                   sdm.put_iv_60::float,
+                   sdm.put_iv_90::float,
                    CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_30::float END AS rv_30,
                    CASE WHEN sdm.vrp_signal_enabled THEN sdm.vrp::float END AS vrp,
                    sdm.rv_data_status,
@@ -83,6 +89,8 @@ class MarketRepository:
                    sdm.skew_25::float,
                    sdm.fwdv_3060::float,
                    sdm.fwdfct_3060::float,
+                   sdm.call_fwdfct_3060::float,
+                   sdm.put_fwdfct_3060::float,
                    sdm.fev_30::float,
                    sdm.iv_slope_3060::float,
                    sdm.dte_30,
@@ -1070,6 +1078,8 @@ class MarketRepository:
             SELECT trade_date,
                    -- Implied volatility term structure
                    iv_30::float, iv_60::float, iv_90::float,
+                   call_iv_30::float, call_iv_60::float, call_iv_90::float,
+                   put_iv_30::float, put_iv_60::float, put_iv_90::float,
                    -- Realized volatility (all windows)
                    CASE WHEN rv_calculation_version >= 2 THEN rv_10::float END AS rv_10,
                    CASE WHEN rv_calculation_version >= 2 THEN rv_20::float END AS rv_20,
@@ -1083,7 +1093,8 @@ class MarketRepository:
                    CASE WHEN vrp_signal_enabled THEN vrp::float END AS vrp,
                    vrp_signal_enabled,
                    -- Forward volatility
-                   fwdv_3060::float, fev_30::float,
+                   fwdv_3060::float, fwdfct_3060::float,
+                   call_fwdfct_3060::float, put_fwdfct_3060::float, fev_30::float,
                    -- Skew (all delta levels)
                    skew_20::float, skew_25::float, skew_30::float, smoothed_skew::float,
                    -- IV/RV and IV/FEV ratios

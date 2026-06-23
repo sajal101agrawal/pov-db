@@ -54,6 +54,19 @@ The preview is read-only. See
 [corporate-action-rv-remediation.md](docs/operations/corporate-action-rv-remediation.md) before
 running the production backfill.
 
+Preview/execute the one-time historical Call/Put Forward Factor backfill after deploying the
+additive schema:
+
+```bash
+python scripts/backfill_forward_factors.py
+python scripts/backfill_forward_factors.py --execute
+```
+
+The preview is read-only. The execute run populates separate call/put constant-maturity IVs and
+Forward Factors for existing `symbol_daily_metrics` rows without rewriting the existing average
+Forward Factor. It is idempotent and audited. See
+[forward-factor-remediation.md](docs/operations/forward-factor-remediation.md).
+
 Run one daily EOD update after the NSE bhavcopy is published:
 
 ```bash
@@ -85,8 +98,9 @@ tries NSE `option-chain-v3` for live all-strike CE+PE option volume and overlays
 `avg_option_volume` with `avg_option_volume_source='nse:option-chain-v3'`; if NSE is unavailable,
 the latest local EOD metric is returned with `avg_option_volume_source='symbol_daily_metrics'`.
 `live_atm_iv` is included when the NSE option-chain response has usable ATM IV. The same live
-summary also refreshes the forward-volatility inputs derived from IV: `iv_30`, `iv_60`, `iv_90`,
-`fwdv_3060`, `fwdfct_3060`, `fev_30`, and `iv_slope_3060`; EOD values are preserved under
+summary also refreshes the average/call/put forward-volatility inputs derived from IV:
+`iv_30/60/90`, `call_iv_30/60/90`, `put_iv_30/60/90`, `fwdv_3060`, `fwdfct_3060`,
+`call_fwdfct_3060`, `put_fwdfct_3060`, `fev_30`, and `iv_slope_3060`; EOD values are preserved under
 `eod_*` keys when live values are overlaid. `/api/symbol/{symbol}/term-structure` keeps the
 historical series cached but overlays the latest live IV/factor/slope row at read time. NSE
 option-summary requests are throttled by `LIVE_OPTION_SUMMARY_MIN_INTERVAL_SECONDS` (default
@@ -176,3 +190,4 @@ The formula audit is in [docs/calculations/formula-audit.md](docs/calculations/f
 - [Current validation report](docs/operations/current-validation-2026-05-20.md)
 - [Live option-chain architecture](docs/architecture/live-option-chain.md)
 - [AWS deployment notes](docs/operations/aws-deployment.md)
+- [Forward Factor production remediation](docs/operations/forward-factor-remediation.md)

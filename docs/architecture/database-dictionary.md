@@ -1,6 +1,6 @@
 # Database Dictionary
 
-Last validated locally: 2026-05-21.
+Last validated locally: 2026-06-23.
 
 ## Unit Policy
 
@@ -84,6 +84,8 @@ Purpose: one dashboard-ready row per symbol per trade date.
 Important columns:
 
 - `iv_30/iv_60/iv_90`: synthetic constant-maturity IVs, decimal annualized.
+- `call_iv_30/call_iv_60/call_iv_90`: synthetic constant-maturity ATM call IVs.
+- `put_iv_30/put_iv_60/put_iv_90`: synthetic constant-maturity ATM put IVs.
 - `expiry_30d/expiry_60d/expiry_90d`: first/second/third monthly exchange-expiry buckets.
 - `dte_30/dte_60/dte_90`: actual calendar days from `trade_date` to the selected expiry.
 - `rv_10/rv_20/rv_30/rv_60/rv_90`: Yang-Zhang realized vol, decimal annualized.
@@ -94,7 +96,10 @@ Important columns:
 - `vrp_signal_enabled`: true only when adjusted RV30 and lagged IV30 are usable.
 - `vrp`: `iv_30(20 trading days earlier) - rv_30(today)`.
 - `fwdv_3060`: synthetic forward volatility between target 30D and 60D maturities.
-- `fwdfct_3060`: `(iv_30 / fwdv_3060) - 1`.
+- `fwdfct_3060`: Average Forward Factor, `(iv_30 / fwdv_3060) - 1`. The database
+  name is retained for compatibility.
+- `call_fwdfct_3060`: Call Forward Factor from `call_iv_30` and `call_iv_60`.
+- `put_fwdfct_3060`: Put Forward Factor from `put_iv_30` and `put_iv_60`.
 - `iv_slope_3060`: `(iv_60 - iv_30) / 30`.
 - `skew_20/25/30`: put IV minus call IV at the closest target deltas.
 - `avg_option_volume`: total traded option contracts for the symbol/date, summed across all
@@ -111,6 +116,8 @@ Expected nulls:
   against the trailing available non-null observations for the same symbol; null observations
   are not counted in the percentile denominator.
 - `nearest_ce_iv` can be null if the selected ATM call leg has no valid IV.
+- Call/put IV and factor fields can be null independently when that option side lacks a usable IV
+  or produces negative forward variance.
 
 ### `corporate_actions`
 

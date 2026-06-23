@@ -33,3 +33,15 @@ def test_dashboard_live_overlay_allows_scanner_filters_to_use_displayed_values()
 
     assert _matches_numeric_filters(overlaid, filters)
 
+
+def test_golden_strategy_filter_uses_call_or_put_forward_factor() -> None:
+    filters = {"max_fwdfct_3060": {"min": 0.16}}
+
+    assert _matches_numeric_filters(
+        {"call_fwdfct_3060": 0.12, "put_fwdfct_3060": 0.18, "max_fwdfct_3060": 0.18},
+        filters,
+    )
+    assert not _matches_numeric_filters(
+        {"call_fwdfct_3060": 0.12, "put_fwdfct_3060": 0.15, "max_fwdfct_3060": 0.15},
+        filters,
+    )

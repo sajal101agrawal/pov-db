@@ -1,6 +1,6 @@
 # Live Market Data Architecture
 
-Last updated: 2026-05-28.
+Last updated: 2026-06-23.
 
 ## Current State
 
@@ -81,11 +81,12 @@ Greeks remain `NULL` for those live snapshot legs.
 
 The live quote payload overlays NSE option-chain IV analytics onto the latest EOD baseline:
 
-- `iv_30`, `iv_60`, and `iv_90` are recomputed from live ATM IV across the 30/60/90 expiry hints.
-- `fwdv_3060`, `fwdfct_3060`, `fev_30`, and `iv_slope_3060` reuse the same formula helpers as the
-  EOD pipeline.
+- `iv_30/60/90`, `call_iv_30/60/90`, and `put_iv_30/60/90` are recomputed from live ATM IV across
+  the 30/60/90 expiry hints. Call and put legs remain separate.
+- `fwdv_3060`, `fwdfct_3060` (average), `call_fwdfct_3060`, `put_fwdfct_3060`, `fev_30`, and
+  `iv_slope_3060` reuse the same formula helpers as the EOD pipeline.
 - EOD values are preserved as `eod_iv_30`, `eod_iv_60`, `eod_iv_90`, `eod_fwdv_3060`,
-  `eod_fwdfct_3060`, `eod_fev_30`, and `eod_iv_slope_3060` whenever live values are present.
+  matching `eod_*` keys whenever live values are present.
 - Source markers such as `iv_term_structure_source='nse:option-chain-v3'` and
   `forward_analytics_source='nse:option-chain-v3'` identify live overlays.
 

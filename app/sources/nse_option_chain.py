@@ -219,7 +219,9 @@ def normalize_option_chain_summary(
         return None
 
     atm = _atm_row(strikes, underlying)
-    atm_iv = _average([atm.get("ce_iv"), atm.get("pe_iv")]) if atm else None
+    call_iv = atm.get("ce_iv") if atm else None
+    put_iv = atm.get("pe_iv") if atm else None
+    atm_iv = _average([call_iv, put_iv])
     expiry_date = _parse_expiry(expiry)
     return {
         "symbol": symbol.upper(),
@@ -233,6 +235,8 @@ def normalize_option_chain_summary(
         "live_option_underlying": underlying,
         "live_atm_strike": atm.get("strike") if atm else None,
         "live_atm_iv": atm_iv,
+        "live_atm_call_iv": call_iv,
+        "live_atm_put_iv": put_iv,
         "live_atm_iv_source": "nse:option-chain-v3" if atm_iv is not None else None,
         "nse_option_chain_timestamp": records.get("timestamp"),
     }
@@ -373,6 +377,8 @@ def _combine_expiry_summaries(
             "expiry_date": item.get("live_option_expiry_date"),
             "atm_strike": item.get("live_atm_strike"),
             "atm_iv": item.get("live_atm_iv"),
+            "call_iv": item.get("live_atm_call_iv"),
+            "put_iv": item.get("live_atm_put_iv"),
             "underlying": item.get("live_option_underlying"),
             "strike_count": item.get("live_option_strike_count"),
             "timestamp": item.get("nse_option_chain_timestamp"),

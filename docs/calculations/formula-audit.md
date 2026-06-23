@@ -1,6 +1,6 @@
 # Formula Audit
 
-Last audited: 2026-05-21.
+Last audited: 2026-06-23.
 
 ## Unit Convention
 
@@ -62,6 +62,19 @@ For each expiry, the pipeline takes ATM IV:
 ```text
 ATM_IV = average(ATM_CE_IV, ATM_PE_IV)
 ```
+
+The same expiry-specific ATM strike is also retained by option side:
+
+```text
+ATM strike = strike closest to the same-day underlying close
+Call ATM IV = valid CE IV at the ATM strike
+Put ATM IV  = valid PE IV at the ATM strike
+```
+
+Variance interpolation is performed independently for the average, call, and put series. The
+persisted fields are `iv_30/60/90`, `call_iv_30/60/90`, and `put_iv_30/60/90`. A missing call leg
+is never replaced by the put IV (and vice versa). The average series continues to average whichever
+valid ATM legs are available, preserving the historical behavior.
 
 Then it interpolates in variance space:
 
@@ -155,11 +168,25 @@ Forward vol between 30 and 60 days:
 fwdv_3060 = sqrt((iv_60^2 * 60 - iv_30^2 * 30) / 30)
 ```
 
-Forward factor:
+Average Forward Factor (legacy field retained for API compatibility):
 
 ```text
 fwdfct_3060 = (iv_30 / fwdv_3060) - 1
 ```
+
+Call and Put Forward Factors apply the same formula independently:
+
+```text
+call_fwdv_3060 = sqrt((call_iv_60^2 * 60 - call_iv_30^2 * 30) / 30)
+call_fwdfct_3060 = (call_iv_30 / call_fwdv_3060) - 1
+
+put_fwdv_3060 = sqrt((put_iv_60^2 * 60 - put_iv_30^2 * 30) / 30)
+put_fwdfct_3060 = (put_iv_30 / put_fwdv_3060) - 1
+```
+
+Dashboard rating and the Golden Mispricing Strategy use the required OR rule. Equivalently, the
+screening value is `max(call_fwdfct_3060, put_fwdfct_3060)`, ignoring null sides. A symbol crosses
+the strategy threshold when either available side is greater than `0.16` (`16%`).
 
 Slope:
 
@@ -177,7 +204,7 @@ iv30_fev30_ratio = iv_30 / fev_30
 Null policy:
 
 - Any denominator `NULL` or `<= 0` makes the ratio `NULL`.
-- Negative forward variance makes `fwdv_3060` `NULL`.
+- Negative forward variance makes the corresponding average/call/put factor `NULL`.
 
 ## Skew
 

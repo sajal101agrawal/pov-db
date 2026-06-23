@@ -8,13 +8,8 @@ from typing import Any
 from app.core.config import Settings
 from app.db.repository import MarketRepository
 from app.services.calculations import (
-    MAX_ANALYTICS_IV,
-    atm_iv,
     black_scholes_greeks,
-    constant_maturity_iv,
     compute_skew,
-    forward_factor,
-    forward_volatility,
     implied_volatility_bisection,
     iv_slope,
     ratio,
@@ -23,6 +18,7 @@ from app.services.calculations import (
     volatility_risk_premium,
     years_to_expiry,
 )
+from app.services.forward_factors import compute_forward_factor_metrics, monthly_expiry_buckets
 from app.services.corporate_actions import (
     USABLE_RV_STATUSES,
     calculate_price_series_metrics,
@@ -221,31 +217,15 @@ class Pipeline:
         atm_strike: float,
     ) -> dict[str, Any]:
         expiries = sorted({row["expiry_date"] for row in chain if row["expiry_date"] >= trade_date})
-        expiry_buckets = _monthly_expiry_buckets(expiries)
+        expiry_buckets = monthly_expiry_buckets(expiries)
         expiry_30 = expiry_buckets[0] if len(expiry_buckets) >= 1 else None
         expiry_60 = expiry_buckets[1] if len(expiry_buckets) >= 2 else None
         expiry_90 = expiry_buckets[2] if len(expiry_buckets) >= 3 else None
 
-        def atm_for_expiry(expiry):
-            if not expiry:
-                return None, None, None, None
-            rows = [r for r in chain if r["expiry_date"] == expiry]
-            if not rows:
-                return None, None, None, None
-            strike = min(
-                {float(r["strike_price"]) for r in rows},
-                key=lambda value: (abs(value - spot_close), value),
-            )
-            ce = next((r for r in rows if float(r["strike_price"]) == strike and r["option_type"] == "CE"), None)
-            pe = next((r for r in rows if float(r["strike_price"]) == strike and r["option_type"] == "PE"), None)
-            return strike, ce, pe, atm_iv(ce.get("iv") if ce else None, pe.get("iv") if pe else None)
-
-        strike30, ce30, pe30, iv30 = atm_for_expiry(expiry_30)
-        _strike60, _ce60, _pe60, iv60 = atm_for_expiry(expiry_60)
-        _strike90, _ce90, _pe90, iv90 = atm_for_expiry(expiry_90)
-        iv30 = _constant_maturity_atm_iv(expiries, trade_date, atm_for_expiry, 30)
-        iv60 = _constant_maturity_atm_iv(expiries, trade_date, atm_for_expiry, 60)
-        iv90 = _constant_maturity_atm_iv(expiries, trade_date, atm_for_expiry, 90)
+        forward_metrics = compute_forward_factor_metrics(chain, trade_date, spot_close)
+        iv30 = forward_metrics["iv_30"]
+        iv60 = forward_metrics["iv_60"]
+        iv90 = forward_metrics["iv_90"]
 
         dte30 = (expiry_30 - trade_date).days if expiry_30 else None
         dte60 = (expiry_60 - trade_date).days if expiry_60 else None
@@ -256,7 +236,7 @@ class Pipeline:
         rv30 = price_metrics["rv_30"]
         rv60 = price_metrics["rv_60"]
         rv90 = price_metrics["rv_90"]
-        fwdv = forward_volatility(iv30, iv60, 30, 60)
+        fwdv = forward_metrics["fwdv_3060"]
         skew_expiry = _expiry_closest_to_target(expiries, trade_date, 30)
         skew_chain = [row for row in chain if row["expiry_date"] == skew_expiry]
         skew20 = compute_skew(skew_chain, 0.20)
@@ -269,17 +249,23 @@ class Pipeline:
             "iv_30": iv30,
             "iv_60": iv60,
             "iv_90": iv90,
+            "call_iv_30": forward_metrics["call_iv_30"],
+            "call_iv_60": forward_metrics["call_iv_60"],
+            "call_iv_90": forward_metrics["call_iv_90"],
+            "put_iv_30": forward_metrics["put_iv_30"],
+            "put_iv_60": forward_metrics["put_iv_60"],
+            "put_iv_90": forward_metrics["put_iv_90"],
             "expiry_30d": expiry_30,
             "expiry_60d": expiry_60,
             "expiry_90d": expiry_90,
             "dte_30": dte30,
             "dte_60": dte60,
             "dte_90": dte90,
-            "atm_strike": strike30 or atm_strike,
-            "nearest_ce_iv": _analytics_iv(ce30.get("iv") if ce30 else None),
-            "nearest_pe_iv": _analytics_iv(pe30.get("iv") if pe30 else None),
-            "nearest_ce_ltp": (ce30.get("settle_price") or ce30.get("close")) if ce30 else None,
-            "nearest_pe_ltp": (pe30.get("settle_price") or pe30.get("close")) if pe30 else None,
+            "atm_strike": forward_metrics["atm_strike"] or atm_strike,
+            "nearest_ce_iv": forward_metrics["nearest_ce_iv"],
+            "nearest_pe_iv": forward_metrics["nearest_pe_iv"],
+            "nearest_ce_ltp": forward_metrics["nearest_ce_ltp"],
+            "nearest_pe_ltp": forward_metrics["nearest_pe_ltp"],
             "rv_10": rv10,
             "rv_20": rv20,
             "rv_30": rv30,
@@ -296,7 +282,9 @@ class Pipeline:
             "vrp": None,
             "vrp_signal_enabled": False,
             "fwdv_3060": fwdv,
-            "fwdfct_3060": forward_factor(iv30, fwdv),
+            "fwdfct_3060": forward_metrics["fwdfct_3060"],
+            "call_fwdfct_3060": forward_metrics["call_fwdfct_3060"],
+            "put_fwdfct_3060": forward_metrics["put_fwdfct_3060"],
             "fev_30": fwdv,
             "iv_slope_3060": iv_slope(iv30, iv60, 30, 60),
             "skew_20": skew20,
@@ -333,7 +321,7 @@ class Pipeline:
         ]
         expiry = metrics.get("expiry_30d")
         if expiry not in expiries:
-            expiry_buckets = _monthly_expiry_buckets(expiries)
+            expiry_buckets = monthly_expiry_buckets(expiries)
             expiry = expiry_buckets[0] if expiry_buckets else None
         if not expiry:
             await self.repository.upsert_straddle_pnl({"symbol": symbol, "trade_date": trade_date, "skip_reason": "NO_EXPIRY"})
@@ -377,47 +365,15 @@ class Pipeline:
         )
 
 
-def _monthly_expiry_buckets(expiries: list[date]) -> list[date]:
-    """Return the first three monthly expiry buckets.
-
-    NSE index options can have weekly expiries. The prior processing project
-    used the latest expiry in each calendar month as the monthly contract.
-    Stock options usually only have monthly expiries, so this is simply the
-    sorted first/second/third available expiries for those symbols.
-    """
-    monthly: dict[tuple[int, int], date] = {}
-    for expiry in sorted(expiries):
-        monthly[(expiry.year, expiry.month)] = expiry
-    selected = sorted(monthly.values())
-    return selected[:3] if len(selected) >= 3 else sorted(expiries)[:3]
-
-
-def _constant_maturity_atm_iv(expiries, trade_date: date, atm_for_expiry, target_dte: int) -> float | None:
-    candidates = []
-    for expiry in expiries:
-        dte = (expiry - trade_date).days
-        _strike, _ce, _pe, iv = atm_for_expiry(expiry)
-        if iv is not None and iv > 0:
-            candidates.append((expiry, dte, iv))
-    if not candidates:
-        return None
-    exact = next((iv for _expiry, dte, iv in candidates if dte == target_dte), None)
-    if exact is not None:
-        return exact
-    below = [item for item in candidates if item[1] < target_dte]
-    above = [item for item in candidates if item[1] > target_dte]
-    if below and above:
-        near = max(below, key=lambda item: item[1])
-        far = min(above, key=lambda item: item[1])
-        return constant_maturity_iv(near[2], near[1], far[2], far[1], target_dte)
-    return min(candidates, key=lambda item: abs(item[1] - target_dte))[2]
-
-
 def _expiry_closest_to_target(expiries: list[date], trade_date: date, target_dte: int) -> date | None:
     candidates = [expiry for expiry in expiries if expiry >= trade_date]
     if not candidates:
         return None
     return min(candidates, key=lambda expiry: abs((expiry - trade_date).days - target_dte))
+
+
+# Backward-compatible private alias used by older imports and tests.
+_monthly_expiry_buckets = monthly_expiry_buckets
 
 
 def _total_option_volume(chain: list[dict[str, Any]]) -> float | None:
@@ -427,10 +383,6 @@ def _total_option_volume(chain: list[dict[str, Any]]) -> float | None:
         if row.get("option_type") in {"CE", "PE"} and row.get("num_contracts") is not None
     ]
     return sum(volumes) if volumes else None
-
-
-def _analytics_iv(value: float | None) -> float | None:
-    return value if value is not None and 0 < float(value) <= MAX_ANALYTICS_IV else None
 
 
 def _discovered_symbols(fo_rows, cm_rows) -> list[dict[str, Any]]:

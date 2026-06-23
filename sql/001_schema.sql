@@ -176,6 +176,12 @@ CREATE TABLE IF NOT EXISTS symbol_daily_metrics (
     iv_30 NUMERIC(18,8),
     iv_60 NUMERIC(18,8),
     iv_90 NUMERIC(18,8),
+    call_iv_30 NUMERIC(18,8),
+    call_iv_60 NUMERIC(18,8),
+    call_iv_90 NUMERIC(18,8),
+    put_iv_30 NUMERIC(18,8),
+    put_iv_60 NUMERIC(18,8),
+    put_iv_90 NUMERIC(18,8),
     expiry_30d DATE,
     expiry_60d DATE,
     expiry_90d DATE,
@@ -204,6 +210,8 @@ CREATE TABLE IF NOT EXISTS symbol_daily_metrics (
     vrp_signal_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     fwdv_3060 NUMERIC(18,8),
     fwdfct_3060 NUMERIC(18,8),
+    call_fwdfct_3060 NUMERIC(18,8),
+    put_fwdfct_3060 NUMERIC(18,8),
     fev_30 NUMERIC(18,8),
     iv_slope_3060 NUMERIC(18,8),
     skew_20 NUMERIC(18,8),
@@ -230,6 +238,14 @@ SELECT create_hypertable('symbol_daily_metrics', 'trade_date', chunk_time_interv
 CREATE INDEX IF NOT EXISTS idx_sdm_latest ON symbol_daily_metrics (symbol, trade_date DESC) INCLUDE (iv_30, iv_60, iv_90, vrp, skew_25, rv_30);
 CREATE INDEX IF NOT EXISTS idx_sdm_date_symbol ON symbol_daily_metrics (trade_date, symbol);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_60 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_iv_30 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_iv_60 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_iv_90 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_iv_30 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_iv_60 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_iv_90 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_fwdfct_3060 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_fwdfct_3060 NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_90 NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_10_raw NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_20_raw NUMERIC(18,8);
