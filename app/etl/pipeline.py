@@ -420,15 +420,6 @@ def _expiry_closest_to_target(expiries: list[date], trade_date: date, target_dte
     return min(candidates, key=lambda expiry: abs((expiry - trade_date).days - target_dte))
 
 
-def _weekly_closes(ohlc: list[dict[str, Any]]) -> list[float]:
-    weekly: dict[tuple[int, int], float] = {}
-    for row in ohlc:
-        key = row["trade_date"].isocalendar()[:2]
-        if row.get("close") is not None:
-            weekly[key] = row["close"]
-    return list(weekly.values())
-
-
 def _total_option_volume(chain: list[dict[str, Any]]) -> float | None:
     volumes = [
         float(row["num_contracts"])

@@ -6,7 +6,11 @@ import math
 import re
 from typing import Any, Iterable
 
-from app.services.calculations import rsi, yang_zhang_realized_vol
+from app.services.calculations import (
+    MAX_ABS_RV_LOG_RETURN,
+    rsi,
+    yang_zhang_realized_vol,
+)
 
 
 RV_CALCULATION_VERSION = 2
@@ -33,6 +37,29 @@ ADJUSTING_ACTION_TYPES = {
     "MERGER",
     "OTHER_PRICE_ADJUSTMENT",
 }
+
+NUMERIC_AUDIT_SCALES = {
+    "rv_10": 8,
+    "rv_20": 8,
+    "rv_30": 8,
+    "rv_60": 8,
+    "rv_90": 8,
+    "rv_10_raw": 8,
+    "rv_20_raw": 8,
+    "rv_30_raw": 8,
+    "rv_60_raw": 8,
+    "rv_90_raw": 8,
+    "vrp": 8,
+    "iv30_rv30_ratio": 8,
+    "daily_rsi": 4,
+    "weekly_rsi": 4,
+}
+
+STATE_AUDIT_FIELDS = (
+    "rv_data_status",
+    "rv_calculation_version",
+    "vrp_signal_enabled",
+)
 
 
 @dataclass(frozen=True)
@@ -326,7 +353,7 @@ def _rv_window(
         result = AdjustmentResult(selected, STATUS_SPARSE, [], [])
         return None, None, result
 
-    raw_value = _yang_zhang(selected)
+    raw_value = _yang_zhang(selected, max_abs_log_return=None)
     result = adjust_ohlc_for_actions(selected, actions)
     if not result.usable:
         return raw_value, None, result
@@ -338,14 +365,52 @@ def _rv_window(
     return raw_value, adjusted_value, result
 
 
-def _yang_zhang(rows: list[dict[str, Any]]) -> float | None:
+def _yang_zhang(
+    rows: list[dict[str, Any]],
+    *,
+    max_abs_log_return: float | None = MAX_ABS_RV_LOG_RETURN,
+) -> float | None:
     return yang_zhang_realized_vol(
         [float(row["open"]) for row in rows],
         [float(row["high"]) for row in rows],
         [float(row["low"]) for row in rows],
         [float(row["close"]) for row in rows],
-        max_abs_log_return=None,
+        max_abs_log_return=max_abs_log_return,
     )
+
+
+def materially_changed_metric_values(old: dict[str, Any], new: dict[str, Any]) -> bool:
+    if any(
+        not _same_number(
+            old.get(field),
+            new.get(field),
+            scale=scale,
+        )
+        for field, scale in NUMERIC_AUDIT_SCALES.items()
+    ):
+        return True
+    return any(old.get(field) != new.get(field) for field in STATE_AUDIT_FIELDS)
+
+
+def metric_audit_values(values: dict[str, Any]) -> dict[str, Any]:
+    numeric = {
+        field: (
+            round(float(values[field]), scale)
+            if values.get(field) is not None
+            else None
+        )
+        for field, scale in NUMERIC_AUDIT_SCALES.items()
+    }
+    return {
+        **numeric,
+        **{field: values.get(field) for field in STATE_AUDIT_FIELDS},
+    }
+
+
+def _same_number(left: Any, right: Any, *, scale: int) -> bool:
+    if left is None or right is None:
+        return left is right
+    return round(float(left), scale) == round(float(right), scale)
 
 
 def _weekly_closes(rows: Iterable[dict[str, Any]]) -> list[float]:

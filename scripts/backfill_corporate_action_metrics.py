@@ -19,49 +19,13 @@ from app.core.config import get_settings
 from app.db.pool import close_pool, get_pool
 from app.db.repository import MarketRepository
 from app.services.calculations import ratio, volatility_risk_premium
-from app.services.corporate_actions import USABLE_RV_STATUSES, calculate_price_series_metrics
+from app.services.corporate_actions import (
+    USABLE_RV_STATUSES,
+    calculate_price_series_metrics,
+    materially_changed_metric_values,
+    metric_audit_values,
+)
 from app.services.factory import build_corporate_actions_source
-
-
-NUMERIC_AUDIT_FIELDS = (
-    "rv_10",
-    "rv_20",
-    "rv_30",
-    "rv_60",
-    "rv_90",
-    "rv_10_raw",
-    "rv_20_raw",
-    "rv_30_raw",
-    "rv_60_raw",
-    "rv_90_raw",
-    "vrp",
-    "iv30_rv30_ratio",
-    "daily_rsi",
-    "weekly_rsi",
-)
-
-NUMERIC_AUDIT_SCALES = {
-    "rv_10": 8,
-    "rv_20": 8,
-    "rv_30": 8,
-    "rv_60": 8,
-    "rv_90": 8,
-    "rv_10_raw": 8,
-    "rv_20_raw": 8,
-    "rv_30_raw": 8,
-    "rv_60_raw": 8,
-    "rv_90_raw": 8,
-    "vrp": 8,
-    "iv30_rv30_ratio": 8,
-    "daily_rsi": 4,
-    "weekly_rsi": 4,
-}
-
-STATE_AUDIT_FIELDS = (
-    "rv_data_status",
-    "rv_calculation_version",
-    "vrp_signal_enabled",
-)
 
 
 async def main() -> None:
@@ -241,14 +205,14 @@ async def main() -> None:
                 }
                 updates.append(_update_tuple(symbol, trade_date, new))
                 statuses[rv_status] += 1
-                if _materially_changed(old, new):
+                if materially_changed_metric_values(old, new):
                     audits.append(
                         (
                             run_id,
                             symbol,
                             trade_date,
-                            json.dumps(_audit_values(old), default=str),
-                            json.dumps(_audit_values(new), default=str),
+                            json.dumps(metric_audit_values(old), default=str),
+                            json.dumps(metric_audit_values(new), default=str),
                         )
                     )
 
@@ -379,40 +343,6 @@ _UPDATE_SQL = """
         updated_at = NOW()
     WHERE symbol = $1 AND trade_date = $2
 """
-
-
-def _materially_changed(old: dict[str, Any], new: dict[str, Any]) -> bool:
-    if any(
-        not _same_number(
-            old.get(field),
-            new.get(field),
-            scale=NUMERIC_AUDIT_SCALES[field],
-        )
-        for field in NUMERIC_AUDIT_FIELDS
-    ):
-        return True
-    return any(old.get(field) != new.get(field) for field in STATE_AUDIT_FIELDS)
-
-
-def _same_number(left: Any, right: Any, *, scale: int) -> bool:
-    if left is None or right is None:
-        return left is right
-    return round(float(left), scale) == round(float(right), scale)
-
-
-def _audit_values(values: dict[str, Any]) -> dict[str, Any]:
-    numeric = {
-        field: (
-            round(float(values[field]), NUMERIC_AUDIT_SCALES[field])
-            if values.get(field) is not None
-            else None
-        )
-        for field in NUMERIC_AUDIT_FIELDS
-    }
-    return {
-        **numeric,
-        **{field: values.get(field) for field in STATE_AUDIT_FIELDS},
-    }
 
 
 async def _invalidate_analytics_cache(redis_url: str) -> int:

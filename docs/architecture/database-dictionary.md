@@ -106,6 +106,11 @@ Expected nulls:
 
 - RV fields are null until enough historical closes exist.
 - VRP is null until current RV30 and lagged IV30 exist.
+- Weekly RSI is null until enough weekly closes exist.
+- Percentiles are null when the current value is null. Non-null percentile calculations rank
+  against the trailing available non-null observations for the same symbol; null observations
+  are not counted in the percentile denominator.
+- `nearest_ce_iv` can be null if the selected ATM call leg has no valid IV.
 
 ### `corporate_actions`
 
@@ -117,11 +122,6 @@ silently using raw prices.
 
 Purpose: production recomputation lineage and old/new values for materially changed historical
 metrics.
-- Weekly RSI is null until enough weekly closes exist.
-- Percentiles are null when the current value is null. Non-null percentile calculations rank
-  against the trailing available non-null observations for the same symbol; null observations
-  are not counted in the percentile denominator.
-- `nearest_ce_iv` can be null if the selected ATM call leg has no valid IV.
 
 Validation rules:
 

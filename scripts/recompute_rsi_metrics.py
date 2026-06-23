@@ -53,14 +53,15 @@ async def main() -> None:
 
     updated = 0
     try:
-        if rows and not args.skip_action_sync:
+        if rows:
             action_start = (start or rows[0]["trade_date"]) - timedelta(days=365)
             action_end = end or rows[-1]["trade_date"]
-            settings = get_settings()
-            actions = await build_corporate_actions_source(settings).fetch_actions(
-                action_start, action_end, symbols
-            )
-            await repo.upsert_corporate_actions(actions)
+            if not args.skip_action_sync:
+                settings = get_settings()
+                actions = await build_corporate_actions_source(settings).fetch_actions(
+                    action_start, action_end, symbols
+                )
+                await repo.upsert_corporate_actions(actions)
             await repo.resolve_corporate_action_factors(
                 start=action_start, end=action_end, symbols=symbols
             )

@@ -6,15 +6,17 @@ import pytest
 
 from app.services.corporate_actions import (
     STATUS_ADJUSTED,
+    STATUS_INVALID,
     STATUS_PENDING,
     STATUS_SUSPICIOUS,
     adjust_ohlc_for_actions,
     calculate_price_series_metrics,
     derive_price_multiplier,
+    materially_changed_metric_values,
+    metric_audit_values,
     parse_action_terms,
 )
 from app.sources.nse_corporate_actions import parse_nse_corporate_action
-from scripts.backfill_corporate_action_metrics import _audit_values, _materially_changed
 
 
 def test_bonus_and_split_terms_create_pre_ex_price_multipliers() -> None:
@@ -124,9 +126,32 @@ def test_backfill_audit_uses_database_precision_and_tracks_version_state() -> No
         "daily_rsi": 54.523306,
     }
 
-    assert not _materially_changed(old, recalculated)
-    assert _audit_values(recalculated)["daily_rsi"] == 54.5233
-    assert _materially_changed(old, {**recalculated, "rv_calculation_version": 3})
+    assert not materially_changed_metric_values(old, recalculated)
+    assert metric_audit_values(recalculated)["daily_rsi"] == 54.5233
+    assert materially_changed_metric_values(old, {**recalculated, "rv_calculation_version": 3})
+
+
+def test_adjusted_rv_keeps_extreme_return_quality_guard() -> None:
+    start = date(2024, 1, 1)
+    rows = []
+    for index in range(35):
+        close = 100.0 if index < 15 else 400.0
+        open_price = 100.0 if index <= 15 else 400.0
+        rows.append(
+            {
+                "trade_date": start + timedelta(days=index),
+                "open": open_price,
+                "high": max(open_price, close),
+                "low": min(open_price, close),
+                "close": close,
+            }
+        )
+
+    metrics = calculate_price_series_metrics(rows, [], rows[-1]["trade_date"])
+
+    assert metrics["rv_30_raw"] is not None
+    assert metrics["rv_30"] is None
+    assert metrics["rv_data_status"] == STATUS_INVALID
 
 
 def _row(trade_date: date, close: float) -> dict:
