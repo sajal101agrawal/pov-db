@@ -96,7 +96,7 @@ Important columns:
 - `vrp_signal_enabled`: true only when adjusted RV30 and lagged IV30 are usable.
 - `vrp`: `iv_30(20 trading days earlier) - rv_30(today)`.
 - `fwdv_3060`: synthetic forward volatility between target 30D and 60D maturities.
-- `fwdfct_3060`: Average Forward Factor, `(iv_30 / fwdv_3060) - 1`. The database
+- `fwdfct_3060`: Average Forward Factor, `(iv_30 / iv_60) - 1`. The database
   name is retained for compatibility.
 - `call_fwdfct_3060`: Call Forward Factor from `call_iv_30` and `call_iv_60`.
 - `put_fwdfct_3060`: Put Forward Factor from `put_iv_30` and `put_iv_60`.

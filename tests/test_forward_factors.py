@@ -22,16 +22,13 @@ def test_forward_factors_use_separate_atm_call_and_put_iv_term_structures() -> N
 
     metrics = compute_forward_factor_metrics(chain, trade_date, 102.0)
 
-    call_fwdv = math.sqrt((0.27**2 * 60 - 0.30**2 * 30) / 30)
-    put_fwdv = math.sqrt((0.19**2 * 60 - 0.20**2 * 30) / 30)
-    average_fwdv = math.sqrt((0.23**2 * 60 - 0.25**2 * 30) / 30)
     assert metrics["atm_strike"] == 100.0
     assert metrics["call_iv_30"] == 0.30
     assert metrics["put_iv_30"] == 0.20
     assert metrics["iv_30"] == 0.25
-    assert math.isclose(metrics["call_fwdfct_3060"], 0.30 / call_fwdv - 1)
-    assert math.isclose(metrics["put_fwdfct_3060"], 0.20 / put_fwdv - 1)
-    assert math.isclose(metrics["fwdfct_3060"], 0.25 / average_fwdv - 1)
+    assert math.isclose(metrics["call_fwdfct_3060"], 0.30 / 0.27 - 1)
+    assert math.isclose(metrics["put_fwdfct_3060"], 0.20 / 0.19 - 1)
+    assert math.isclose(metrics["fwdfct_3060"], 0.25 / 0.23 - 1)
 
 
 def test_missing_call_leg_does_not_borrow_put_iv_for_call_forward_factor() -> None:

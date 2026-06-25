@@ -48,7 +48,7 @@ def test_pdf_forward_factor_formula() -> None:
     fwdv = forward_volatility(0.20, 0.30, 30, 60)
     assert fwdv is not None
     assert math.isclose(fwdv, math.sqrt((0.30**2 * 60 - 0.20**2 * 30) / 30))
-    assert math.isclose(forward_factor(0.20, fwdv), (0.20 / fwdv) - 1.0)
+    assert math.isclose(forward_factor(0.20, 0.30), (0.20 / 0.30) - 1.0)
     assert forward_factor(0.20, 0.0) is None
 
 

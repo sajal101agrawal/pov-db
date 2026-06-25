@@ -109,18 +109,12 @@ def compute_forward_factor_metrics(
     )
 
     average_fwdv = forward_volatility(values["iv_30"], values["iv_60"], 30, 60)
-    call_fwdv = forward_volatility(
-        values["call_iv_30"], values["call_iv_60"], 30, 60
-    )
-    put_fwdv = forward_volatility(
-        values["put_iv_30"], values["put_iv_60"], 30, 60
-    )
     values.update(
         {
             "fwdv_3060": average_fwdv,
-            "fwdfct_3060": forward_factor(values["iv_30"], average_fwdv),
-            "call_fwdfct_3060": forward_factor(values["call_iv_30"], call_fwdv),
-            "put_fwdfct_3060": forward_factor(values["put_iv_30"], put_fwdv),
+            "fwdfct_3060": forward_factor(values["iv_30"], values["iv_60"]),
+            "call_fwdfct_3060": forward_factor(values["call_iv_30"], values["call_iv_60"]),
+            "put_fwdfct_3060": forward_factor(values["put_iv_30"], values["put_iv_60"]),
         }
     )
     return values

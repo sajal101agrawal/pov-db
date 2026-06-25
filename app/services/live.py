@@ -1344,8 +1344,6 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
     put_iv60 = _expiry_bucket_from_terms(terms, 1, "put_iv")
     put_iv90 = _expiry_bucket_from_terms(terms, 2, "put_iv")
     fwdv = forward_volatility(iv30, iv60, 30, 60)
-    call_fwdv = forward_volatility(call_iv30, call_iv60, 30, 60)
-    put_fwdv = forward_volatility(put_iv30, put_iv60, 30, 60)
     metrics: dict[str, Any] = {
         "iv_30": iv30,
         "iv_60": iv60,
@@ -1357,9 +1355,9 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
         "put_iv_60": put_iv60,
         "put_iv_90": put_iv90,
         "fwdv_3060": fwdv,
-        "fwdfct_3060": forward_factor(iv30, fwdv),
-        "call_fwdfct_3060": forward_factor(call_iv30, call_fwdv),
-        "put_fwdfct_3060": forward_factor(put_iv30, put_fwdv),
+        "fwdfct_3060": forward_factor(iv30, iv60),
+        "call_fwdfct_3060": forward_factor(call_iv30, call_iv60),
+        "put_fwdfct_3060": forward_factor(put_iv30, put_iv60),
         "fev_30": fwdv,
         "iv_slope_3060": iv_slope(iv30, iv60, 30, 60),
         "iv_term_structure_source": source,

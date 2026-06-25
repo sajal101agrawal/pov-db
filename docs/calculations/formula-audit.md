@@ -171,7 +171,7 @@ fwdv_3060 = sqrt((iv_60^2 * 60 - iv_30^2 * 30) / 30)
 Average Forward Factor (legacy field retained for API compatibility):
 
 ```text
-fwdfct_3060 = (iv_30 / fwdv_3060) - 1
+fwdfct_3060 = (iv_30 / iv_60) - 1
 ```
 
 For live data, the average IV term used by `fwdfct_3060` requires both ATM call IV and ATM put IV
@@ -182,10 +182,10 @@ Call and Put Forward Factors apply the same formula independently:
 
 ```text
 call_fwdv_3060 = sqrt((call_iv_60^2 * 60 - call_iv_30^2 * 30) / 30)
-call_fwdfct_3060 = (call_iv_30 / call_fwdv_3060) - 1
+call_fwdfct_3060 = (call_iv_30 / call_iv_60) - 1
 
 put_fwdv_3060 = sqrt((put_iv_60^2 * 60 - put_iv_30^2 * 30) / 30)
-put_fwdfct_3060 = (put_iv_30 / put_fwdv_3060) - 1
+put_fwdfct_3060 = (put_iv_30 / put_iv_60) - 1
 ```
 
 Dashboard rating and the Golden Mispricing Strategy use the required OR rule. Equivalently, the
