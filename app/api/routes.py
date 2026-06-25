@@ -834,17 +834,21 @@ def _overlay_live_volatility_cone(result: dict[str, Any], live: dict[str, Any]) 
         return result
 
     cone = {key: dict(value) for key, value in result.get("cone", {}).items()}
+    live_tenors = 0
     for tenor in (30, 60, 90):
         key = f"rv_{tenor}"
         if key not in cone:
             continue
 
         current_iv = _float_or_none(live.get(f"iv_{tenor}"))
-        if current_iv is not None:
-            cone[key]["current"] = current_iv
-            cone[key]["current_iv"] = current_iv
-            cone[key]["current_source"] = "iv"
-            cone[key]["current_iv_source"] = live.get("iv_term_structure_source")
+        if current_iv is None:
+            continue
+
+        live_tenors += 1
+        cone[key]["current"] = current_iv
+        cone[key]["current_iv"] = current_iv
+        cone[key]["current_source"] = "iv"
+        cone[key]["current_iv_source"] = live.get("iv_term_structure_source")
 
         dte = live.get(f"dte_{tenor}")
         if dte is not None:
@@ -853,6 +857,9 @@ def _overlay_live_volatility_cone(result: dict[str, Any], live: dict[str, Any]) 
         expiry = live.get(f"expiry_{tenor}d")
         if expiry is not None:
             cone[key]["expiry"] = _date_to_string(expiry)
+
+    if not live_tenors:
+        return result
 
     return {
         **result,
@@ -930,6 +937,12 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
 
     current = dict(result.get("current") or {})
     live_keys = [
+        "current_price",
+        "last_price",
+        "provider",
+        "provider_symbol",
+        "quote_provider",
+        "quote_provider_symbol",
         "iv_30",
         "iv_60",
         "iv_90",
@@ -982,6 +995,12 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
     if not live:
         return history
     live_keys = [
+        "current_price",
+        "last_price",
+        "provider",
+        "provider_symbol",
+        "quote_provider",
+        "quote_provider_symbol",
         "iv_30",
         "iv_60",
         "iv_90",
@@ -1009,7 +1028,17 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
         "avg_option_volume",
         "avg_option_volume_source",
         "avg_option_volume_kind",
+        "live_option_provider",
+        "live_option_volume",
+        "live_option_volume_source",
+        "live_option_volume_kind",
+        "live_option_expiry",
+        "live_option_expiry_date",
+        "live_option_strike_count",
+        "live_option_underlying",
         "live_atm_strike",
+        "live_atm_iv",
+        "live_atm_iv_source",
         "live_atm_call_iv",
         "live_atm_put_iv",
         "live_atm_call_ltp",
@@ -1017,6 +1046,17 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
         "live_atm_call_volume",
         "live_atm_put_volume",
         "live_atm_option_volume",
+        "live_iv_terms",
+        "live_iv_term_count",
+        "live_iv_term_structure",
+        "live_call_iv_term_structure",
+        "live_put_iv_term_structure",
+        "dte_30",
+        "dte_60",
+        "dte_90",
+        "expiry_30d",
+        "expiry_60d",
+        "expiry_90d",
         "iv_term_structure_source",
         "forward_analytics_source",
         "iv_slope_3060_source",

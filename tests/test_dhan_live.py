@@ -179,10 +179,18 @@ def test_detail_history_overlay_appends_latest_live_row() -> None:
     history = [{"trade_date": "2026-05-28", "iv_30": 0.18}]
     live = {
         "snapshot_time": "2026-05-29T15:29:00+05:30",
+        "current_price": 101.5,
+        "provider": "kite",
+        "quote_provider": "kite",
+        "live_option_provider": "kite",
         "iv_30": 0.20,
         "iv_60": 0.25,
+        "dte_30": 5,
+        "expiry_30d": "2026-06-30",
         "avg_option_volume": 12345,
+        "avg_option_volume_source": "kite:quote",
         "live_atm_strike": 1000,
+        "live_iv_term_structure": [{"tenor": 30, "iv": 0.20}],
         "iv_term_structure_source": "dhan:optionchain",
     }
 
@@ -190,9 +198,17 @@ def test_detail_history_overlay_appends_latest_live_row() -> None:
 
     assert overlaid[-1]["trade_date"] == "2026-05-29"
     assert overlaid[-1]["is_live"] is True
+    assert overlaid[-1]["current_price"] == 101.5
+    assert overlaid[-1]["provider"] == "kite"
+    assert overlaid[-1]["quote_provider"] == "kite"
+    assert overlaid[-1]["live_option_provider"] == "kite"
     assert overlaid[-1]["iv_30"] == 0.20
+    assert overlaid[-1]["dte_30"] == 5
+    assert overlaid[-1]["expiry_30d"] == "2026-06-30"
     assert overlaid[-1]["avg_option_volume"] == 12345
+    assert overlaid[-1]["avg_option_volume_source"] == "kite:quote"
     assert overlaid[-1]["live_atm_strike"] == 1000
+    assert overlaid[-1]["live_iv_term_structure"] == [{"tenor": 30, "iv": 0.20}]
     assert history == [{"trade_date": "2026-05-28", "iv_30": 0.18}]
 
 
