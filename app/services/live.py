@@ -1425,9 +1425,13 @@ def _live_iv_terms(option_summary: dict[str, Any], trade_date: date) -> list[dic
     terms = []
     for item in raw_terms:
         expiry_date = _coerce_date(item.get("expiry_date") or item.get("expiry"))
-        atm_iv_value = _positive_float(item.get("atm_iv"))
         call_iv_value = _positive_float(item.get("call_iv"))
         put_iv_value = _positive_float(item.get("put_iv"))
+        atm_iv_value = (
+            (call_iv_value + put_iv_value) / 2
+            if call_iv_value is not None and put_iv_value is not None
+            else None
+        )
         if expiry_date is None or not any(
             value is not None for value in (atm_iv_value, call_iv_value, put_iv_value)
         ):

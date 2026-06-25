@@ -103,8 +103,8 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
         "live_option_volume_kind": "atm_contracts_call_plus_put",
         "live_atm_iv_source": "kite:quote:calculated-iv",
         "live_iv_terms": [
-            {"expiry_date": date(2026, 7, 25), "atm_iv": 0.20},
-            {"expiry_date": date(2026, 8, 24), "atm_iv": 0.25},
+            {"expiry_date": date(2026, 7, 25), "call_iv": 0.20, "put_iv": 0.22},
+            {"expiry_date": date(2026, 8, 24), "call_iv": 0.25, "put_iv": 0.27},
         ],
     }
 

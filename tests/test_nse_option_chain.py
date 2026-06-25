@@ -120,7 +120,7 @@ def test_live_forward_metrics_use_live_term_structure() -> None:
 def test_live_forward_metrics_do_not_invent_missing_far_tenor() -> None:
     summary = {
         "live_iv_terms": [
-            {"expiry_date": date(2026, 6, 30), "atm_iv": 0.20},
+            {"expiry_date": date(2026, 6, 30), "call_iv": 0.19, "put_iv": 0.21},
         ]
     }
 
@@ -131,6 +131,39 @@ def test_live_forward_metrics_do_not_invent_missing_far_tenor() -> None:
     assert metrics["iv_90"] is None
     assert metrics["fwdv_3060"] is None
     assert metrics["fwdfct_3060"] is None
+
+
+def test_live_forward_metrics_require_both_sides_for_average_factor() -> None:
+    summary = {
+        "live_iv_terms": [
+            {
+                "expiry_date": date(2026, 6, 30),
+                "atm_iv": 0.275,
+                "call_iv": 0.20,
+                "put_iv": 0.31,
+            },
+            {
+                "expiry_date": date(2026, 7, 28),
+                "atm_iv": 0.20,
+                "call_iv": 0.30,
+                "put_iv": None,
+            },
+            {
+                "expiry_date": date(2026, 8, 25),
+                "atm_iv": 0.22,
+                "call_iv": 0.35,
+                "put_iv": None,
+            },
+        ]
+    }
+
+    metrics = _live_forward_metrics(summary, date(2026, 6, 25))
+
+    assert metrics["fwdfct_3060"] is None
+    assert metrics["put_fwdfct_3060"] is None
+    assert metrics["call_fwdfct_3060"] is not None
+    assert metrics["iv_30"] is None
+    assert metrics["call_iv_30"] is not None
 
 
 def test_live_snapshot_falls_back_to_nse_when_dhan_fails(monkeypatch) -> None:

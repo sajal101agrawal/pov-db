@@ -174,6 +174,10 @@ Average Forward Factor (legacy field retained for API compatibility):
 fwdfct_3060 = (iv_30 / fwdv_3060) - 1
 ```
 
+For live data, the average IV term used by `fwdfct_3060` requires both ATM call IV and ATM put IV
+for that expiry. If a tenor has only one side available, call/put factors can still be calculated
+independently, but the average forward factor remains null.
+
 Call and Put Forward Factors apply the same formula independently:
 
 ```text

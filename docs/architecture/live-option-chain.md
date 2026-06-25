@@ -129,6 +129,8 @@ The live quote payload overlays option-chain IV analytics onto the latest EOD ba
   the 30/60/90 expiry hints. Call and put legs remain separate.
 - `fwdv_3060`, `fwdfct_3060` (average), `call_fwdfct_3060`, `put_fwdfct_3060`, `fev_30`, and
   `iv_slope_3060` reuse the same formula helpers as the EOD pipeline.
+- The average IV/factor path requires both call and put IV for a live tenor. A missing side leaves
+  `fwdfct_3060` null while preserving the available `call_fwdfct_3060` or `put_fwdfct_3060`.
 - EOD values are preserved as `eod_iv_30`, `eod_iv_60`, `eod_iv_90`, `eod_fwdv_3060`,
   matching `eod_*` keys whenever live values are present.
 - Source markers such as `iv_term_structure_source='kite:quote:calculated-iv'`,

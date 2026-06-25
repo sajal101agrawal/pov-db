@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
+from html import escape
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from redis.asyncio import Redis
 
 from app.core.config import Settings, get_settings
@@ -1405,14 +1407,73 @@ async def kite_session(
             status_code=400,
             detail="request_token is required in the POST body; get it from /api/admin/kite/login-url login flow",
         )
+    payload = await _exchange_kite_request_token(token, settings, repo, cache_service.redis)
+    return _kite_session_response(payload)
+
+
+@router.get("/admin/kite/callback", response_class=HTMLResponse)
+async def kite_callback(
+    request_token: str = Query(default="", description="Fresh request_token from the Kite redirect"),
+    status: str = Query(default="", description="Kite login status"),
+    action: str = Query(default="", description="Kite login action"),
+    settings: Settings = Depends(get_settings),
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> HTMLResponse:
+    if status and status.lower() != "success":
+        return HTMLResponse(
+            _kite_callback_html(
+                "Kite Login Failed",
+                (
+                    f"Kite returned status={escape(status)!r}, "
+                    f"action={escape(action)!r}. No token was stored."
+                ),
+            ),
+            status_code=400,
+        )
+    token = request_token.strip()
+    if not token:
+        return HTMLResponse(
+            _kite_callback_html(
+                "Kite Login Failed",
+                "The redirect did not include request_token. Please start from the Kite login URL again.",
+            ),
+            status_code=400,
+        )
     try:
-        payload = await generate_kite_access_token(settings, repo, cache_service.redis, token)
+        payload = await _exchange_kite_request_token(token, settings, repo, cache_service.redis)
+    except HTTPException as exc:
+        return HTMLResponse(
+            _kite_callback_html("Kite Login Failed", escape(str(exc.detail))),
+            status_code=exc.status_code,
+        )
+    expires_at = escape(str(payload.get("expires_at") or "unknown"))
+    login_time = escape(str(payload.get("login_time") or "unknown"))
+    return HTMLResponse(
+        _kite_callback_html(
+            "Kite Access Token Stored",
+            f"Login time: {login_time}<br>Expires at: {expires_at}",
+        )
+    )
+
+
+async def _exchange_kite_request_token(
+    request_token: str,
+    settings: Settings,
+    repo: MarketRepository,
+    redis: Redis,
+) -> dict[str, Any]:
+    try:
+        return await generate_kite_access_token(settings, repo, redis, request_token)
     except httpx.HTTPStatusError as exc:
         status_code = 400 if exc.response.status_code in {400, 403} else 502
         raise HTTPException(
             status_code=status_code,
             detail="Kite session exchange failed; check that request_token is fresh and from today's login redirect",
         ) from exc
+
+
+def _kite_session_response(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "provider": "kite",
         "access_token_stored": True,
@@ -1421,6 +1482,43 @@ async def kite_session(
         "login_time": payload.get("login_time"),
         "expires_at": payload.get("expires_at"),
     }
+
+
+def _kite_callback_html(title: str, body: str) -> str:
+    title = escape(title)
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{title}</title>
+    <style>
+      body {{
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 40px;
+        color: #111827;
+        background: #f8fafc;
+      }}
+      main {{
+        max-width: 620px;
+        margin: 0 auto;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 28px;
+      }}
+      h1 {{ margin: 0 0 12px; font-size: 24px; }}
+      p {{ line-height: 1.5; }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>{title}</h1>
+      <p>{body}</p>
+    </main>
+  </body>
+</html>"""
 
 
 @router.post("/admin/trigger-pipeline")
