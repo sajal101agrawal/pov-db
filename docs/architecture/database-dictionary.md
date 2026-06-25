@@ -263,7 +263,7 @@ Future email alerts should hook into this table or the global exception handler 
 
 ### `live_snapshot`
 
-Purpose: optional PostgreSQL fallback/audit table for live data.
+Purpose: append-only PostgreSQL audit table for full live option-chain snapshots.
 
 Current write path:
 
@@ -272,6 +272,34 @@ Current write path:
 - `POST /api/admin/live-snapshot` can trigger a manual option-chain snapshot using the configured
   option-chain provider. NSE is the default provider and does not require Dhan credentials.
 - The same normalized payload is written to Redis for the live API and to PostgreSQL for audit.
+
+### `live_symbol_metrics`
+
+Purpose: latest per-symbol live payload used as the PostgreSQL fallback after Redis live keys expire.
+
+Current write path:
+
+- `fetch_and_store_live_quotes` writes each normalized live quote and option-summary payload to
+  Redis and upserts the same payload into `live_symbol_metrics`.
+- The row is replaced only when the incoming `snapshot_time` is newer than or equal to the stored
+  snapshot.
+- `/api/live`, `/api/live/{symbol}`, `/api/all-dashboard`, `/api/symbol/{symbol}`,
+  `/api/symbol/{symbol}/history`, `/api/symbol/{symbol}/term-structure`, and
+  `/api/symbol/{symbol}/volatility-cone` read Redis first and then this table. This preserves the
+  last collected live market snapshot after market close instead of falling back to prior-day EOD
+  data.
+
+### `broker_access_tokens`
+
+Purpose: latest short-lived broker access token used by live providers.
+
+Current write path:
+
+- `POST /api/admin/kite/session` exchanges a fresh Kite `request_token` from the JSON body, stores
+  the resulting access token here, and also caches it in Redis.
+- The live worker reads Redis first, then this table, then static env tokens.
+- Kite tokens are still daily session tokens and expire the next morning per Kite's rules; this
+  table is persistence across API/worker restarts, not a bypass for the daily login requirement.
 
 ### `pipeline_state`
 

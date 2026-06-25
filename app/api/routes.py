@@ -4,7 +4,8 @@ import json
 from datetime import date, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from redis.asyncio import Redis
 
 from app.core.config import Settings, get_settings
@@ -13,7 +14,12 @@ from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
 from app.services.cache import CacheService
 from app.services.factory import build_bhavcopy_source, build_corporate_actions_source
-from app.services.live import fetch_and_store_live_quotes, fetch_and_store_live_snapshots
+from app.services.live import (
+    fetch_and_store_live_quotes,
+    fetch_and_store_live_snapshots,
+    generate_kite_access_token,
+    kite_login_url_for_settings,
+)
 from app.sources.rates import IndiaRiskFreeRateClient
 
 
@@ -374,6 +380,46 @@ def _matches_numeric_filters(payload: dict[str, Any], numeric_filters: dict[str,
     return True
 
 
+async def _live_payloads_by_symbol(
+    cache_service: CacheService,
+    repo: MarketRepository,
+    symbols: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    clean_symbols = (
+        [symbol.upper() for symbol in symbols if symbol]
+        if symbols is not None
+        else None
+    )
+    live_by_symbol = await repo.latest_live_metrics(clean_symbols)
+
+    if clean_symbols is None:
+        redis_payloads = await cache_service.get_live_symbols()
+    else:
+        redis_payloads = []
+        for symbol in clean_symbols:
+            live = await cache_service.get_live(symbol)
+            if live:
+                redis_payloads.append(live)
+
+    for item in redis_payloads:
+        symbol = str(item.get("symbol") or "").upper()
+        if symbol:
+            live_by_symbol[symbol] = item
+    return live_by_symbol
+
+
+async def _latest_live_payload(
+    symbol: str,
+    cache_service: CacheService,
+    repo: MarketRepository,
+) -> dict[str, Any]:
+    symbol = symbol.upper()
+    live = await cache_service.get_live(symbol)
+    if live:
+        return live
+    return (await repo.latest_live_metrics([symbol])).get(symbol, {})
+
+
 @router.get("/all-dashboard")
 async def all_symbols_dashboard(
     limit: int = Query(default=50, ge=1, le=200, description="Rows per page"),
@@ -392,19 +438,6 @@ async def all_symbols_dashboard(
 ) -> dict:
     """Latest dashboard row for every active symbol — paginated screener table."""
     import json as _json
-
-    has_any_filter = any([
-        search.strip(), symbol_type.strip(), is_nifty50.strip(), is_nifty100.strip(),
-        has_result.strip(), result_date_min.strip(), result_date_max.strip(),
-        sectors.strip(), numeric_filters.strip(),
-    ])
-
-    # Cache only plain unfiltered pages
-    if not has_any_filter:
-        cache_key = f"all_dashboard:{limit}:{offset}"
-        cached = await cache_service.get_json(cache_key)
-        if cached is not None:
-            return cached
 
     # Build dynamic WHERE conditions
     where_parts: list[str] = ["(su.is_active = TRUE OR su.is_active IS NULL)"]
@@ -612,12 +645,7 @@ async def all_symbols_dashboard(
 
     payloads = [_json.loads(r["payload"]) for r in rows]
     if post_numeric_filters:
-        live_payloads = await cache_service.get_live_symbols()
-        live_by_symbol = {
-            str(item.get("symbol") or "").upper(): item
-            for item in live_payloads
-            if item.get("symbol")
-        }
+        live_by_symbol = await _live_payloads_by_symbol(cache_service, repo)
         payloads = [
             _overlay_live_dashboard_payload(payload, live_by_symbol)
             for payload in payloads
@@ -631,6 +659,15 @@ async def all_symbols_dashboard(
         payloads = payloads[offset: offset + limit]
     else:
         total = rows[0]["total"] if rows else 0
+        live_by_symbol = await _live_payloads_by_symbol(
+            cache_service,
+            repo,
+            [str(payload.get("symbol") or "").upper() for payload in payloads if payload.get("symbol")],
+        )
+        payloads = [
+            _overlay_live_dashboard_payload(payload, live_by_symbol)
+            for payload in payloads
+        ]
 
     result = {
         "total": int(total),
@@ -638,8 +675,6 @@ async def all_symbols_dashboard(
         "offset": offset,
         "data": payloads,
     }
-    if not has_any_filter:
-        await cache_service.set_json(f"all_dashboard:{limit}:{offset}", result)
     return result
 
 
@@ -757,7 +792,7 @@ async def symbol_volatility_cone(
         }
         await cache_service.set_json(cache_key, result)
 
-    live = await cache_service.get_live(symbol)
+    live = await _latest_live_payload(symbol, cache_service, repo)
     return _overlay_live_volatility_cone(result, live)
 
 
@@ -793,7 +828,7 @@ def _volatility_cone_x_axis_dtes(cone: dict[str, dict]) -> dict[str, int | None]
 
 
 def _overlay_live_volatility_cone(result: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
-    if live.get("iv_term_structure_source") != "nse:option-chain-v3":
+    if not live.get("iv_term_structure_source"):
         return result
 
     cone = {key: dict(value) for key, value in result.get("cone", {}).items()}
@@ -883,12 +918,12 @@ async def symbol_term_structure(
         }
         await cache_service.set_json(cache_key, result)
 
-    live = await cache_service.get_live(symbol)
+    live = await _latest_live_payload(symbol, cache_service, repo)
     return _overlay_live_term_structure(result, live)
 
 
 def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
-    if live.get("iv_term_structure_source") != "nse:option-chain-v3":
+    if not live.get("iv_term_structure_source"):
         return result
 
     current = dict(result.get("current") or {})
@@ -939,6 +974,86 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         "current": current,
         "history": history,
     }
+
+
+def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dict]:
+    if not live:
+        return history
+    live_keys = [
+        "iv_30",
+        "iv_60",
+        "iv_90",
+        "call_iv_30",
+        "call_iv_60",
+        "call_iv_90",
+        "put_iv_30",
+        "put_iv_60",
+        "put_iv_90",
+        "rv_10",
+        "rv_20",
+        "rv_30",
+        "rv_60",
+        "rv_90",
+        "vrp",
+        "fwdv_3060",
+        "fwdfct_3060",
+        "call_fwdfct_3060",
+        "put_fwdfct_3060",
+        "max_fwdfct_3060",
+        "fev_30",
+        "iv_slope_3060",
+        "iv30_rv30_ratio",
+        "iv30_fev30_ratio",
+        "avg_option_volume",
+        "avg_option_volume_source",
+        "avg_option_volume_kind",
+        "live_atm_strike",
+        "live_atm_call_iv",
+        "live_atm_put_iv",
+        "live_atm_call_ltp",
+        "live_atm_put_ltp",
+        "live_atm_call_volume",
+        "live_atm_put_volume",
+        "live_atm_option_volume",
+        "iv_term_structure_source",
+        "forward_analytics_source",
+        "iv_slope_3060_source",
+    ]
+    current = {key: live[key] for key in live_keys if key in live}
+    if not current:
+        return history
+    snapshot_time = live.get("snapshot_time")
+    trade_date = _date_from_snapshot(snapshot_time)
+    if trade_date is None:
+        trade_date = datetime.now().date().isoformat()
+    current.update(
+        {
+            "trade_date": trade_date,
+            "is_live": True,
+            "snapshot_time": snapshot_time,
+        }
+    )
+
+    result = [dict(item) for item in history]
+    if result and _date_to_string(result[-1].get("trade_date")) == trade_date:
+        result[-1] = {**result[-1], **current}
+    else:
+        result.append(current)
+    return result
+
+
+def _date_from_snapshot(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
 
 
 @router.get("/symbol/{symbol}/result-moves")
@@ -1127,7 +1242,7 @@ async def symbol_dashboard(
         if cached is None:
             raise HTTPException(status_code=404, detail="symbol not found")
         await cache_service.set_dashboard(symbol, cached)
-    live = await cache_service.get_live(symbol)
+    live = await _latest_live_payload(symbol, cache_service, repo)
     return {**cached, **live}
 
 
@@ -1141,10 +1256,12 @@ async def symbol_history(
     cache_key = f"history:{symbol.upper()}:{days}"
     cached = await cache_service.get_json(cache_key)
     if cached is not None:
-        return cached
-    result = await repo.history(symbol, days)
-    await cache_service.set_json(cache_key, result)
-    return result
+        result = cached
+    else:
+        result = await repo.history(symbol, days)
+        await cache_service.set_json(cache_key, result)
+    live = await _latest_live_payload(symbol, cache_service, repo)
+    return _overlay_live_history(result, live)
 
 
 @router.get("/symbol/{symbol}/pnl")
@@ -1176,6 +1293,8 @@ async def live(
         result = await fetch_and_store_live_quotes(settings, repo, cache_service.redis, [symbol])
         payload = await cache_service.get_live(symbol)
         if not payload:
+            payload = (await repo.latest_live_metrics([symbol])).get(symbol)
+        if not payload:
             raise HTTPException(status_code=404, detail=result)
     return payload
 
@@ -1190,7 +1309,10 @@ async def live_symbols(
     if payload:
         return payload
     await fetch_and_store_live_quotes(settings, repo, cache_service.redis)
-    return await cache_service.get_live_symbols()
+    payload = await cache_service.get_live_symbols()
+    if payload:
+        return payload
+    return list((await repo.latest_live_metrics()).values())
 
 
 @router.get("/live/{symbol}/option-chain")
@@ -1256,6 +1378,49 @@ async def trigger_live_snapshot(
         raise
     finally:
         await redis.aclose()
+
+
+@router.get("/admin/kite/login-url")
+async def kite_login_url(settings: Settings = Depends(get_settings)) -> dict:
+    url = kite_login_url_for_settings(settings)
+    if not url:
+        raise HTTPException(status_code=400, detail="KITE_API_KEY is not configured")
+    return {"login_url": url}
+
+
+@router.post("/admin/kite/session")
+async def kite_session(
+    request_token: str = Body(
+        default="",
+        embed=True,
+        description="Fresh request_token from the Kite login redirect",
+    ),
+    settings: Settings = Depends(get_settings),
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> dict:
+    token = request_token.strip() or (settings.kite_request_token or "").strip()
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail="request_token is required in the POST body; get it from /api/admin/kite/login-url login flow",
+        )
+    try:
+        payload = await generate_kite_access_token(settings, repo, cache_service.redis, token)
+    except httpx.HTTPStatusError as exc:
+        status_code = 400 if exc.response.status_code in {400, 403} else 502
+        raise HTTPException(
+            status_code=status_code,
+            detail="Kite session exchange failed; check that request_token is fresh and from today's login redirect",
+        ) from exc
+    return {
+        "provider": "kite",
+        "access_token_stored": True,
+        "user_id": payload.get("user_id"),
+        "api_key": payload.get("api_key"),
+        "login_time": payload.get("login_time"),
+        "expires_at": payload.get("expires_at"),
+    }
 
 
 @router.post("/admin/trigger-pipeline")

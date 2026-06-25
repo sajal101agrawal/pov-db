@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import math
 from datetime import date
-
-import pytest
 
 import app.services.live as live_service
 from app.core.config import Settings
@@ -134,8 +133,7 @@ def test_live_forward_metrics_do_not_invent_missing_far_tenor() -> None:
     assert metrics["fwdfct_3060"] is None
 
 
-@pytest.mark.asyncio
-async def test_live_snapshot_falls_back_to_nse_when_dhan_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_live_snapshot_falls_back_to_nse_when_dhan_fails(monkeypatch) -> None:
     calls: list[tuple[str, list[str] | None]] = []
 
     class Repo:
@@ -152,34 +150,34 @@ async def test_live_snapshot_falls_back_to_nse_when_dhan_fails(monkeypatch: pyte
     monkeypatch.setattr(live_service, "_fetch_and_store_dhan_live_snapshots", dhan_failure)
     monkeypatch.setattr(live_service, "_fetch_and_store_nse_live_snapshots", nse_success)
 
-    result = await live_service.fetch_and_store_live_snapshots(
-        Settings(live_option_chain_provider="dhan", dhan_client_id="id", dhan_access_token="token"),
-        Repo(),  # type: ignore[arg-type]
-        object(),  # type: ignore[arg-type]
-        ["RELIANCE"],
+    result = asyncio.run(
+        live_service.fetch_and_store_live_snapshots(
+            Settings(live_option_chain_provider="dhan", dhan_client_id="id", dhan_access_token="token"),
+            Repo(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            ["RELIANCE"],
+        )
     )
 
     assert result == {"symbols_requested": 1, "snapshots_stored": 1}
     assert calls == [("dhan:fallback_to_nse", ["RELIANCE"]), ("nse", ["RELIANCE"])]
 
 
-@pytest.mark.asyncio
-async def test_selected_live_symbols_all_uses_active_universe() -> None:
+def test_selected_live_symbols_all_uses_active_universe() -> None:
     class Repo:
         async def active_symbols(self) -> list[str]:
             return ["RELIANCE", "SBIN"]
 
-    result = await selected_live_symbols(Settings(live_symbols="all"), Repo())  # type: ignore[arg-type]
+    result = asyncio.run(selected_live_symbols(Settings(live_symbols="all"), Repo()))  # type: ignore[arg-type]
 
     assert result == ["RELIANCE", "SBIN"]
 
 
-@pytest.mark.asyncio
-async def test_selected_live_symbols_comma_list_limits_universe() -> None:
+def test_selected_live_symbols_comma_list_limits_universe() -> None:
     class Repo:
         async def active_symbols(self) -> list[str]:
             raise AssertionError("active universe should not be loaded")
 
-    result = await selected_live_symbols(Settings(live_symbols="reliance, sbin"), Repo())  # type: ignore[arg-type]
+    result = asyncio.run(selected_live_symbols(Settings(live_symbols="reliance, sbin"), Repo()))  # type: ignore[arg-type]
 
     assert result == ["RELIANCE", "SBIN"]

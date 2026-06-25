@@ -92,25 +92,35 @@ scripts/export_postgres_dump.sh
 ```
 
 For live data, `GET /api/live` returns all active symbols in one response for frontend polling.
-It refreshes from Yahoo Finance quotes on cache miss, stores the result in Redis for
-`LIVE_CACHE_TTL_SECONDS` seconds (default `300`), and includes the live underlying price. It also
-tries NSE `option-chain-v3` for live all-strike CE+PE option volume and overlays that into
-`avg_option_volume` with `avg_option_volume_source='nse:option-chain-v3'`; if NSE is unavailable,
-the latest local EOD metric is returned with `avg_option_volume_source='symbol_daily_metrics'`.
-`live_atm_iv` is included when the NSE option-chain response has usable ATM IV. The same live
-summary also refreshes the average/call/put forward-volatility inputs derived from IV:
+The selected production live path is Kite by setting `LIVE_QUOTE_PROVIDER=kite`,
+`LIVE_OPTION_SUMMARY_PROVIDER=kite`, and `LIVE_OPTION_CHAIN_PROVIDER=kite`. Kite supplies live quote
+snapshots but not IV, so the service quotes the nearest ATM CE/PE for the 30/60/90 expiry targets,
+calculates call/put IV from live option prices, and then reuses the same live
+IV30/IV60/slope/forward-factor pipeline. Dhan remains supported as an alternate provider and NSE
+remains the option-chain fallback.
+
+Live quote payloads are cached in Redis for `LIVE_CACHE_TTL_SECONDS` seconds (default `300`) and
+upserted into `live_symbol_metrics`. API reads use Redis first and then the latest PostgreSQL live
+row, so after market close the dashboard and detail APIs keep showing the last collected live
+snapshot instead of dropping back to yesterday's EOD metrics. The live payload includes current
+price, live all-strike CE+PE option volume, ATM strike/IV/leg volume, and recomputed
 `iv_30/60/90`, `call_iv_30/60/90`, `put_iv_30/60/90`, `fwdv_3060`, `fwdfct_3060`,
-`call_fwdfct_3060`, `put_fwdfct_3060`, `fev_30`, and `iv_slope_3060`; EOD values are preserved under
-`eod_*` keys when live values are overlaid. `/api/symbol/{symbol}/term-structure` keeps the
-historical series cached but overlays the latest live IV/factor/slope row at read time. NSE
-option-summary requests are throttled by `LIVE_OPTION_SUMMARY_MIN_INTERVAL_SECONDS` (default
-`0.25`) with low concurrency and exponential backoff; persistent `403`/`429` responses stop the
-current NSE summary batch and leave the endpoint on EOD fallback data. `GET /api/live/{symbol}`
-uses the same cache/refresh path for one symbol. `GET /api/live/{symbol}/option-chain` also uses
-NSE `option-chain-v3` by default, so Dhan credentials are not required for local live data. Dhan
-remains an optional provider only when `LIVE_OPTION_CHAIN_PROVIDER=dhan` is explicitly configured;
-if that provider fails, the endpoint logs the Dhan failure and falls back to NSE instead of
-returning a 500.
+`call_fwdfct_3060`, `put_fwdfct_3060`, `max_fwdfct_3060`, `fev_30`, and `iv_slope_3060`; EOD values
+are preserved under `eod_*` keys when live values are overlaid.
+
+`/api/all-dashboard`, `/api/symbol/{symbol}`, `/api/symbol/{symbol}/history`,
+`/api/symbol/{symbol}/term-structure`, and `/api/symbol/{symbol}/volatility-cone` overlay that same
+latest live row at read time. Kite/Dhan option-summary failures are logged and fall back to NSE
+`option-chain-v3`; Kite/Dhan quote failures are logged and fall back to Yahoo for underlying prices.
+`GET /api/live/{symbol}/option-chain` falls back from Kite/Dhan to NSE instead of returning a
+provider failure to clients.
+
+Kite access tokens cannot be regenerated from API key/secret alone. Use
+`GET /api/admin/kite/login-url`, complete the daily Kite login, then submit the redirect
+`request_token` in the JSON body of `POST /api/admin/kite/session`. The service stores the
+resulting access token in Redis and `broker_access_tokens`. The worker has a 06:05 IST refresh hook,
+but it can only exchange a fresh `KITE_REQUEST_TOKEN`; if none is available, it logs
+`kite_token_refresh` with the login URL.
 
 `LIVE_SYMBOLS=all` (or blank) makes background/manual live refreshes use every active symbol from
 `symbol_universe`. Set a comma-separated list only when you intentionally want to limit live polling

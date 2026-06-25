@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from datetime import datetime
+from datetime import timezone
 from typing import Any, Iterable
 
 import asyncpg
@@ -10,6 +11,27 @@ import asyncpg
 from app.services.corporate_actions import derive_price_multiplier
 from app.sources.models import EquityBar, EquityBhavcopyRow, OptionBhavcopyRow
 from app.sources.nse_metadata import SymbolMetadata
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 class MarketRepository:
@@ -580,11 +602,130 @@ class MarketRepository:
             """,
             symbol.upper(),
             snapshot_time,
-            payload.get("underlying_last_price"),
+            _first_present(
+                payload.get("underlying_last_price"),
+                payload.get("current_price"),
+                payload.get("last_price"),
+            ),
             payload.get("pnl"),
             payload.get("maxloss"),
             json.dumps(payload, default=str),
         )
+
+    async def upsert_live_symbol_metrics(self, rows: Iterable[dict[str, Any]]) -> int:
+        items = [dict(row) for row in rows if row.get("symbol")]
+        if not items:
+            return 0
+        records = []
+        for item in items:
+            symbol = str(item["symbol"]).upper()
+            snapshot_time = _coerce_datetime(item.get("snapshot_time")) or datetime.now(timezone.utc)
+            records.append(
+                (
+                    symbol,
+                    snapshot_time,
+                    _first_present(
+                        item.get("current_price"),
+                        item.get("underlying_last_price"),
+                        item.get("last_price"),
+                    ),
+                    _first_present(
+                        item.get("live_option_provider"),
+                        item.get("iv_term_structure_source"),
+                        item.get("quote_provider"),
+                        item.get("provider"),
+                    ),
+                    json.dumps({**item, "symbol": symbol}, default=str),
+                )
+            )
+        async with self.pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO live_symbol_metrics (
+                    symbol, snapshot_time, current_price, source, payload, updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
+                ON CONFLICT (symbol)
+                DO UPDATE SET
+                    snapshot_time = EXCLUDED.snapshot_time,
+                    current_price = EXCLUDED.current_price,
+                    source = EXCLUDED.source,
+                    payload = EXCLUDED.payload,
+                    updated_at = NOW()
+                WHERE live_symbol_metrics.snapshot_time <= EXCLUDED.snapshot_time
+                """,
+                records,
+            )
+        return len(records)
+
+    async def latest_live_metrics(self, symbols: list[str] | None = None) -> dict[str, dict[str, Any]]:
+        params: list[Any] = []
+        where = ""
+        if symbols is not None:
+            clean_symbols = [symbol.upper() for symbol in symbols if symbol]
+            if not clean_symbols:
+                return {}
+            where = "WHERE symbol = ANY($1::text[])"
+            params.append(clean_symbols)
+        rows = await self.pool.fetch(
+            f"""
+            SELECT symbol, snapshot_time, payload::text AS payload_json
+            FROM live_symbol_metrics
+            {where}
+            """,
+            *params,
+        )
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            payload.setdefault("symbol", row["symbol"])
+            payload.setdefault("snapshot_time", row["snapshot_time"].isoformat())
+            result[row["symbol"]] = payload
+        return result
+
+    async def upsert_broker_access_token(
+        self,
+        provider: str,
+        access_token: str,
+        expires_at: datetime | None,
+        payload: dict[str, Any],
+    ) -> None:
+        await self.pool.execute(
+            """
+            INSERT INTO broker_access_tokens (
+                provider, access_token, expires_at, payload, updated_at
+            )
+            VALUES ($1, $2, $3, $4::jsonb, NOW())
+            ON CONFLICT (provider)
+            DO UPDATE SET
+                access_token = EXCLUDED.access_token,
+                expires_at = EXCLUDED.expires_at,
+                payload = EXCLUDED.payload,
+                updated_at = NOW()
+            """,
+            provider.lower(),
+            access_token,
+            expires_at,
+            json.dumps(payload, default=str),
+        )
+
+    async def broker_access_token(self, provider: str) -> dict[str, Any] | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT provider, access_token, expires_at, payload::text AS payload_json, updated_at
+            FROM broker_access_tokens
+            WHERE provider = $1
+            """,
+            provider.lower(),
+        )
+        if row is None:
+            return None
+        payload = json.loads(row["payload_json"])
+        payload.setdefault("access_token", row["access_token"])
+        payload.setdefault("expires_at", row["expires_at"].isoformat() if row["expires_at"] else None)
+        payload.setdefault("updated_at", row["updated_at"].isoformat() if row["updated_at"] else None)
+        payload.setdefault("provider", row["provider"])
+        return payload
 
     async def refresh_expiry_calendar(self, trade_date: date) -> int:
         result = await self.pool.execute(

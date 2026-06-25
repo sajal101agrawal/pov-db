@@ -84,6 +84,26 @@ STATEMENTS = [
         PRIMARY KEY (run_id, symbol, trade_date)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS live_symbol_metrics (
+        symbol VARCHAR(20) PRIMARY KEY,
+        snapshot_time TIMESTAMPTZ NOT NULL,
+        current_price NUMERIC(12,4),
+        source VARCHAR(80),
+        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_lsm_snapshot_time ON live_symbol_metrics (snapshot_time DESC)",
+    """
+    CREATE TABLE IF NOT EXISTS broker_access_tokens (
+        provider VARCHAR(30) PRIMARY KEY,
+        access_token TEXT NOT NULL,
+        expires_at TIMESTAMPTZ,
+        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
 ]
 
 

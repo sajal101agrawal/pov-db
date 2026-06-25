@@ -52,8 +52,14 @@ Currently logged:
 
 - `initialize_market_data` failures during historical runs.
 - `daily_update` failures during daily ETL runs.
-- `live_snapshot_worker` failures during live polling, including Dhan-to-NSE fallback events when
-  legacy Dhan option-chain configuration fails.
+- `live_snapshot_worker` failures during live polling.
+- `live_quote_provider_fallback` when Kite/Dhan quote refresh fails and the worker falls back to
+  Yahoo for underlying prices.
+- `live_option_summary_provider_fallback` when Kite/Dhan option-summary refresh fails and the worker
+  falls back to NSE option-chain summaries.
+- `live_snapshot_provider_fallback` when Kite/Dhan full-chain snapshot refresh fails and the API
+  falls back to NSE.
+- `kite_token_refresh` when the 06:05 IST Kite token hook cannot exchange a fresh request token.
 - `api_live_snapshot` failures from `/api/admin/live-snapshot`.
 - `api_trigger_pipeline` failures from `/api/admin/trigger-pipeline`.
 - Uncaught API errors via the global FastAPI exception handler.

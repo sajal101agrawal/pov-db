@@ -153,8 +153,25 @@ Optional repository secrets:
 - `EC2_APP_DIR`, defaults to `/opt/pov-db`
 
 Before the first deploy, create `$EC2_APP_DIR/shared/.env` on EC2 with the production RDS URL,
-Redis URL, live provider settings, and app settings. The workflow uploads each commit into a release
-directory, updates the `current` symlink, copies the shared `.env`, and runs `scripts/deploy_prod.sh`.
+Redis URL, live provider settings, and app settings. For Kite-first live data, include:
+
+```text
+LIVE_QUOTE_PROVIDER=kite
+LIVE_OPTION_SUMMARY_PROVIDER=kite
+LIVE_OPTION_CHAIN_PROVIDER=kite
+KITE_CLIENT_ID=...
+KITE_API_KEY=...
+KITE_API_SECRET=...
+KITE_AUTO_REFRESH_ENABLED=true
+KITE_TOKEN_REFRESH_TIME_IST=06:05
+```
+
+`KITE_ACCESS_TOKEN` can be included as a static same-day emergency fallback. Routine use should be:
+open `GET /api/admin/kite/login-url`, complete Kite login, then call
+`POST /api/admin/kite/session` with JSON body `{"request_token": "..."}`. The backend stores the resulting daily token in
+Redis and `broker_access_tokens`. Kite does not support unattended retail access-token regeneration
+from API key/secret alone. The workflow uploads each commit into a release directory, updates the
+`current` symlink, copies the shared `.env`, and runs `scripts/deploy_prod.sh`.
 
 ## Daily Operations
 

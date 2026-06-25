@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+from urllib.parse import parse_qsl, urlencode
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -17,6 +18,32 @@ app = FastAPI(title="Power of Volatility DB API", version="0.1.0")
 app.include_router(router, prefix=settings.api_prefix)
 
 
+SENSITIVE_QUERY_KEYS = {
+    "access_token",
+    "api_key",
+    "api_secret",
+    "authorization",
+    "auth_token",
+    "bearer",
+    "client_secret",
+    "password",
+    "pin",
+    "refresh_token",
+    "request_token",
+    "secret",
+    "token",
+}
+
+
+def redact_query(query: str) -> str:
+    if not query:
+        return query
+    redacted = []
+    for key, value in parse_qsl(query, keep_blank_values=True):
+        redacted.append((key, "***" if key.lower() in SENSITIVE_QUERY_KEYS else value))
+    return urlencode(redacted, safe="*")
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     error_id = str(uuid4())
@@ -30,7 +57,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
                 "error_id": error_id,
                 "method": request.method,
                 "path": str(request.url.path),
-                "query": str(request.url.query),
+                "query": redact_query(str(request.url.query)),
                 "message": str(exc),
                 "traceback": traceback.format_exc(limit=20),
             },
