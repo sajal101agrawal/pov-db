@@ -971,6 +971,9 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         "live_iv_term_structure",
         "live_call_iv_term_structure",
         "live_put_iv_term_structure",
+        "live_raw_iv_term_structure",
+        "live_raw_call_iv_term_structure",
+        "live_raw_put_iv_term_structure",
     ]
     for key in live_keys:
         if key in live:
@@ -1051,6 +1054,9 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
         "live_iv_term_structure",
         "live_call_iv_term_structure",
         "live_put_iv_term_structure",
+        "live_raw_iv_term_structure",
+        "live_raw_call_iv_term_structure",
+        "live_raw_put_iv_term_structure",
         "dte_30",
         "dte_60",
         "dte_90",

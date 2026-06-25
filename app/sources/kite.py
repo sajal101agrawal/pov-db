@@ -151,7 +151,10 @@ def quote_mid_or_ltp(raw: dict[str, Any]) -> float | None:
     ask = _float((sell[0] or {}).get("price")) if sell else None
     if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
         return (bid + ask) / 2.0
-    return _float(raw.get("last_price"))
+    volume = _int(raw.get("volume"))
+    if volume is not None and volume > 0:
+        return _float(raw.get("last_price"))
+    return None
 
 
 def token_login_time(payload: dict[str, Any]) -> datetime | None:

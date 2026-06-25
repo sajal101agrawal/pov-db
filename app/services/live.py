@@ -1087,7 +1087,7 @@ def _kite_option_summary_from_quotes(
     atm_iv = _average_available([call_iv, put_iv])
     call_volume = _coerce_int(ce_quote.get("volume")) if ce_quote else None
     put_volume = _coerce_int(pe_quote.get("volume")) if pe_quote else None
-    volumes = [volume for volume in (call_volume, put_volume) if volume is not None]
+    volumes = [volume for volume in (call_volume, put_volume) if volume is not None and volume > 0]
     atm_volume = sum(volumes) if volumes else None
     if atm_iv is None and atm_volume is None:
         return None
@@ -1381,6 +1381,9 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
             {"tenor": 60, "iv": put_iv60},
             {"tenor": 90, "iv": put_iv90},
         ],
+        "live_raw_iv_term_structure": _raw_term_structure_points(terms, "iv"),
+        "live_raw_call_iv_term_structure": _raw_term_structure_points(terms, "call_iv"),
+        "live_raw_put_iv_term_structure": _raw_term_structure_points(terms, "put_iv"),
         "expiry_30d": None,
         "expiry_60d": None,
         "expiry_90d": None,
@@ -1449,6 +1452,23 @@ def _live_iv_terms(option_summary: dict[str, Any], trade_date: date) -> list[dic
             }
         )
     return sorted(terms, key=lambda item: (item["dte"], item["expiry_date"]))
+
+
+def _raw_term_structure_points(terms: list[dict[str, Any]], value_key: str) -> list[dict[str, Any]]:
+    points = []
+    for item in terms:
+        value = item.get(value_key)
+        if value is None:
+            continue
+        points.append(
+            {
+                "tenor": item["dte"],
+                "dte": item["dte"],
+                "expiry": item["expiry_date"].isoformat(),
+                "iv": value,
+            }
+        )
+    return points
 
 
 def _constant_maturity_from_terms(

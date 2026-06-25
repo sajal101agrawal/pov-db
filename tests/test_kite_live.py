@@ -75,6 +75,36 @@ def test_kite_option_summary_calculates_call_put_iv_from_quote_prices() -> None:
     assert summary["live_atm_iv_source"] == "kite:quote:calculated-iv"
 
 
+def test_kite_option_summary_ignores_stale_ltp_without_depth_or_volume() -> None:
+    trade_date = date(2026, 6, 1)
+    expiry = trade_date + timedelta(days=30)
+    request = {
+        "symbol": "ABC",
+        "spot": 100.0,
+        "expiry": expiry,
+        "strike": 100.0,
+        "strike_count": 3,
+        "ce_key": "NFO:ABC26JUN100CE",
+        "pe_key": "NFO:ABC26JUN100PE",
+    }
+    stale_quote = {
+        "last_price": 25.0,
+        "volume": 0,
+        "oi": 100,
+        "depth": {"buy": [], "sell": []},
+    }
+    quotes = {
+        "data": {
+            "NFO:ABC26JUN100CE": stale_quote,
+            "NFO:ABC26JUN100PE": stale_quote,
+        }
+    }
+
+    summary = live_service._kite_option_summary_from_quotes(request, quotes, trade_date, 0.06)
+
+    assert summary is None
+
+
 def test_kite_expiry_targets_are_distinct_when_nearest_targets_overlap() -> None:
     trade_date = date(2026, 6, 25)
     rows = [
@@ -114,6 +144,14 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
     assert payload["dte_90"] is None
     assert payload["iv_90"] is None
     assert payload["eod_iv_90"] == 0.30
+    assert payload["live_raw_call_iv_term_structure"] == [
+        {"tenor": 30, "dte": 30, "expiry": "2026-07-25", "iv": 0.20},
+        {"tenor": 60, "dte": 60, "expiry": "2026-08-24", "iv": 0.25},
+    ]
+    assert payload["live_raw_put_iv_term_structure"] == [
+        {"tenor": 30, "dte": 30, "expiry": "2026-07-25", "iv": 0.22},
+        {"tenor": 60, "dte": 60, "expiry": "2026-08-24", "iv": 0.27},
+    ]
 
 
 def test_kite_token_refresh_logs_missing_request_token_once() -> None:
