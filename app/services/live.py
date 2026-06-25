@@ -12,7 +12,6 @@ from app.core.config import Settings
 from app.db.repository import MarketRepository
 from app.services.cache import CacheService
 from app.services.calculations import (
-    constant_maturity_iv,
     forward_factor,
     forward_volatility,
     implied_volatility_bisection,
@@ -1335,15 +1334,15 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
         or "nse:option-chain-v3"
     )
 
-    iv30 = _constant_maturity_from_terms(terms, 30, "iv")
-    iv60 = _constant_maturity_from_terms(terms, 60, "iv")
-    iv90 = _constant_maturity_from_terms(terms, 90, "iv")
-    call_iv30 = _constant_maturity_from_terms(terms, 30, "call_iv")
-    call_iv60 = _constant_maturity_from_terms(terms, 60, "call_iv")
-    call_iv90 = _constant_maturity_from_terms(terms, 90, "call_iv")
-    put_iv30 = _constant_maturity_from_terms(terms, 30, "put_iv")
-    put_iv60 = _constant_maturity_from_terms(terms, 60, "put_iv")
-    put_iv90 = _constant_maturity_from_terms(terms, 90, "put_iv")
+    iv30 = _expiry_bucket_from_terms(terms, 0, "iv")
+    iv60 = _expiry_bucket_from_terms(terms, 1, "iv")
+    iv90 = _expiry_bucket_from_terms(terms, 2, "iv")
+    call_iv30 = _expiry_bucket_from_terms(terms, 0, "call_iv")
+    call_iv60 = _expiry_bucket_from_terms(terms, 1, "call_iv")
+    call_iv90 = _expiry_bucket_from_terms(terms, 2, "call_iv")
+    put_iv30 = _expiry_bucket_from_terms(terms, 0, "put_iv")
+    put_iv60 = _expiry_bucket_from_terms(terms, 1, "put_iv")
+    put_iv90 = _expiry_bucket_from_terms(terms, 2, "put_iv")
     fwdv = forward_volatility(iv30, iv60, 30, 60)
     call_fwdv = forward_volatility(call_iv30, call_iv60, 30, 60)
     put_fwdv = forward_volatility(put_iv30, put_iv60, 30, 60)
@@ -1471,32 +1470,14 @@ def _raw_term_structure_points(terms: list[dict[str, Any]], value_key: str) -> l
     return points
 
 
-def _constant_maturity_from_terms(
-    terms: list[dict[str, Any]], target_dte: int, value_key: str = "iv"
+def _expiry_bucket_from_terms(
+    terms: list[dict[str, Any]],
+    index: int,
+    value_key: str,
 ) -> float | None:
-    candidates = [item for item in terms if item.get(value_key) is not None]
-    exact = next(
-        (item[value_key] for item in candidates if item["dte"] == target_dte), None
-    )
-    if exact is not None:
-        return exact
-    if len(candidates) == 1:
-        return (
-            candidates[0][value_key]
-            if target_dte <= candidates[0]["dte"]
-            else None
-        )
-    below = [item for item in candidates if item["dte"] < target_dte]
-    above = [item for item in candidates if item["dte"] > target_dte]
-    if below and above:
-        near = max(below, key=lambda item: item["dte"])
-        far = min(above, key=lambda item: item["dte"])
-        return constant_maturity_iv(
-            near[value_key], near["dte"], far[value_key], far["dte"], target_dte
-        )
-    if above:
-        return min(above, key=lambda item: item["dte"])[value_key]
-    return None
+    if index >= len(terms):
+        return None
+    return terms[index].get(value_key)
 
 
 def _coerce_date(value: Any) -> date | None:

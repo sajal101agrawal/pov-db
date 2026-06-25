@@ -133,6 +133,37 @@ def test_live_forward_metrics_do_not_invent_missing_far_tenor() -> None:
     assert metrics["fwdfct_3060"] is None
 
 
+def test_live_forward_metrics_bucket_expiries_as_30_60_90() -> None:
+    summary = {
+        "live_atm_iv_source": "kite:quote:calculated-iv",
+        "live_iv_terms": [
+            {
+                "expiry_date": date(2026, 6, 30),
+                "call_iv": 0.1530,
+                "put_iv": 0.2288,
+            },
+            {
+                "expiry_date": date(2026, 7, 28),
+                "call_iv": 0.2163,
+                "put_iv": 0.2415,
+            },
+        ],
+    }
+
+    metrics = _live_forward_metrics(summary, date(2026, 6, 25))
+
+    assert math.isclose(metrics["iv_30"], (0.1530 + 0.2288) / 2)
+    assert math.isclose(metrics["iv_60"], (0.2163 + 0.2415) / 2)
+    assert metrics["iv_90"] is None
+    assert metrics["dte_30"] == 5
+    assert metrics["dte_60"] == 33
+    assert metrics["fwdv_3060"] is not None
+    assert metrics["fwdfct_3060"] is not None
+    assert metrics["call_fwdfct_3060"] is not None
+    assert metrics["put_fwdfct_3060"] is not None
+    assert metrics["iv_slope_3060"] is not None
+
+
 def test_live_forward_metrics_require_both_sides_for_average_factor() -> None:
     summary = {
         "live_iv_terms": [
@@ -162,7 +193,8 @@ def test_live_forward_metrics_require_both_sides_for_average_factor() -> None:
     assert metrics["fwdfct_3060"] is None
     assert metrics["put_fwdfct_3060"] is None
     assert metrics["call_fwdfct_3060"] is not None
-    assert metrics["iv_30"] is None
+    assert metrics["iv_30"] is not None
+    assert metrics["iv_60"] is None
     assert metrics["call_iv_30"] is not None
 
 
