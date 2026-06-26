@@ -355,9 +355,11 @@ async def _fetch_and_store_dhan_live_quotes(
             option_summaries.get(symbol),
             now,
         )
-        await cache.set_live(symbol, payload, ttl=ttl)
         payloads.append(payload)
     payloads.sort(key=lambda row: row["symbol"])
+    await _apply_live_forward_factor_percentiles(repo, payloads)
+    for payload in payloads:
+        await cache.set_live(payload["symbol"], payload, ttl=ttl)
     await cache.set_live_symbols(payloads, ttl=ttl)
     await repo.upsert_live_symbol_metrics(payloads)
     return {
@@ -405,9 +407,11 @@ async def _fetch_and_store_kite_live_quotes(
             option_summaries.get(symbol),
             now,
         )
-        await cache.set_live(symbol, payload, ttl=ttl)
         payloads.append(payload)
     payloads.sort(key=lambda row: row["symbol"])
+    await _apply_live_forward_factor_percentiles(repo, payloads)
+    for payload in payloads:
+        await cache.set_live(payload["symbol"], payload, ttl=ttl)
     await cache.set_live_symbols(payloads, ttl=ttl)
     await repo.upsert_live_symbol_metrics(payloads)
     return {
@@ -447,9 +451,11 @@ async def _fetch_and_store_yahoo_live_quotes(
             continue
         base = baseline.get(symbol, {})
         payload = _live_quote_payload(base, quote, option_summaries.get(symbol), now)
-        await cache.set_live(symbol, payload, ttl=ttl)
         payloads.append(payload)
     payloads.sort(key=lambda row: row["symbol"])
+    await _apply_live_forward_factor_percentiles(repo, payloads)
+    for payload in payloads:
+        await cache.set_live(payload["symbol"], payload, ttl=ttl)
     await cache.set_live_symbols(payloads, ttl=ttl)
     await repo.upsert_live_symbol_metrics(payloads)
     return {
@@ -459,6 +465,25 @@ async def _fetch_and_store_yahoo_live_quotes(
         "provider": "yahoo",
         "ttl_seconds": ttl,
     }
+
+
+async def _apply_live_forward_factor_percentiles(
+    repo: MarketRepository,
+    payloads: list[dict[str, Any]],
+) -> None:
+    percentiles = await repo.live_forward_factor_percentiles(payloads)
+    for payload in payloads:
+        symbol = str(payload.get("symbol") or "").upper()
+        values = percentiles.get(symbol)
+        if not values:
+            continue
+        for key in (
+            "fwdfct_3060_percentile",
+            "call_fwdfct_3060_percentile",
+            "put_fwdfct_3060_percentile",
+        ):
+            if values.get(key) is not None:
+                payload[key] = values[key]
 
 
 async def _fetch_live_option_summaries(

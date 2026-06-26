@@ -685,6 +685,72 @@ class MarketRepository:
             result[row["symbol"]] = payload
         return result
 
+    async def live_forward_factor_percentiles(
+        self,
+        payloads: Iterable[dict[str, Any]],
+        lookback: int = 252,
+    ) -> dict[str, dict[str, float | None]]:
+        items = [
+            {
+                "symbol": str(item["symbol"]).upper(),
+                "fwdfct_3060": item.get("fwdfct_3060"),
+                "call_fwdfct_3060": item.get("call_fwdfct_3060"),
+                "put_fwdfct_3060": item.get("put_fwdfct_3060"),
+            }
+            for item in payloads
+            if item.get("symbol")
+            and any(
+                item.get(field) is not None
+                for field in ("fwdfct_3060", "call_fwdfct_3060", "put_fwdfct_3060")
+            )
+        ]
+        if not items:
+            return {}
+        rows = await self.pool.fetch(
+            """
+            WITH live AS (
+                SELECT *
+                FROM jsonb_to_recordset($1::jsonb) AS x(
+                    symbol text,
+                    fwdfct_3060 double precision,
+                    call_fwdfct_3060 double precision,
+                    put_fwdfct_3060 double precision
+                )
+            )
+            SELECT live.symbol,
+                   CASE WHEN live.fwdfct_3060 IS NULL THEN NULL ELSE
+                       100.0 * percent_rank(live.fwdfct_3060)
+                       WITHIN GROUP (ORDER BY hist.fwdfct_3060)
+                       FILTER (WHERE hist.fwdfct_3060 IS NOT NULL)
+                   END AS fwdfct_3060_percentile,
+                   CASE WHEN live.call_fwdfct_3060 IS NULL THEN NULL ELSE
+                       100.0 * percent_rank(live.call_fwdfct_3060)
+                       WITHIN GROUP (ORDER BY hist.call_fwdfct_3060)
+                       FILTER (WHERE hist.call_fwdfct_3060 IS NOT NULL)
+                   END AS call_fwdfct_3060_percentile,
+                   CASE WHEN live.put_fwdfct_3060 IS NULL THEN NULL ELSE
+                       100.0 * percent_rank(live.put_fwdfct_3060)
+                       WITHIN GROUP (ORDER BY hist.put_fwdfct_3060)
+                       FILTER (WHERE hist.put_fwdfct_3060 IS NOT NULL)
+                   END AS put_fwdfct_3060_percentile
+            FROM live
+            LEFT JOIN LATERAL (
+                SELECT fwdfct_3060::float,
+                       call_fwdfct_3060::float,
+                       put_fwdfct_3060::float
+                FROM symbol_daily_metrics h
+                WHERE h.symbol = live.symbol
+                ORDER BY h.trade_date DESC
+                LIMIT $2
+            ) hist ON TRUE
+            GROUP BY live.symbol, live.fwdfct_3060,
+                     live.call_fwdfct_3060, live.put_fwdfct_3060
+            """,
+            json.dumps(items, default=str),
+            lookback,
+        )
+        return {row["symbol"]: dict(row) for row in rows}
+
     async def upsert_broker_access_token(
         self,
         provider: str,

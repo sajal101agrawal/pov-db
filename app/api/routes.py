@@ -1122,9 +1122,28 @@ def _refresh_current_forward_factor_percentiles(
         "put_fwdfct_3060": "put_fwdfct_3060_percentile",
     }
     for value_field, percentile_field in fields.items():
-        percentile = _percent_rank_current(history[:-1], value_field, current.get(value_field))
+        percentile = _percent_rank_current(history, value_field, current.get(value_field))
         if percentile is not None:
             current[percentile_field] = percentile
+
+
+async def _refresh_live_payload_forward_percentiles(
+    symbol: str,
+    payload: dict[str, Any],
+    repo: MarketRepository,
+) -> dict[str, Any]:
+    symbol = symbol.upper().strip()
+    if not symbol or not payload or not payload.get("snapshot_time"):
+        return payload
+    if not any(
+        payload.get(field) is not None
+        for field in ("fwdfct_3060", "call_fwdfct_3060", "put_fwdfct_3060")
+    ):
+        return payload
+    history = await repo.history(symbol, 252)
+    current = dict(payload)
+    _refresh_current_forward_factor_percentiles(history, current)
+    return current
 
 
 def _percent_rank_current(
@@ -1348,7 +1367,8 @@ async def symbol_dashboard(
             raise HTTPException(status_code=404, detail="symbol not found")
         await cache_service.set_dashboard(symbol, cached)
     live = await _latest_live_payload(symbol, cache_service, repo)
-    return {**cached, **live}
+    payload = {**cached, **live}
+    return await _refresh_live_payload_forward_percentiles(symbol, payload, repo)
 
 
 @router.get("/symbol/{symbol}/history")
@@ -1401,7 +1421,7 @@ async def live(
             payload = (await repo.latest_live_metrics([symbol])).get(symbol)
         if not payload:
             raise HTTPException(status_code=404, detail=result)
-    return payload
+    return await _refresh_live_payload_forward_percentiles(symbol, payload, repo)
 
 
 @router.get("/live")
@@ -1412,12 +1432,33 @@ async def live_symbols(
 ) -> list[dict]:
     payload = await cache_service.get_live_symbols()
     if payload:
-        return payload
+        return [
+            await _refresh_live_payload_forward_percentiles(
+                str(item.get("symbol") or ""),
+                item,
+                repo,
+            )
+            for item in payload
+        ]
     await fetch_and_store_live_quotes(settings, repo, cache_service.redis)
     payload = await cache_service.get_live_symbols()
     if payload:
-        return payload
-    return list((await repo.latest_live_metrics()).values())
+        return [
+            await _refresh_live_payload_forward_percentiles(
+                str(item.get("symbol") or ""),
+                item,
+                repo,
+            )
+            for item in payload
+        ]
+    return [
+        await _refresh_live_payload_forward_percentiles(
+            str(item.get("symbol") or ""),
+            item,
+            repo,
+        )
+        for item in (await repo.latest_live_metrics()).values()
+    ]
 
 
 @router.get("/live/{symbol}/option-chain")
