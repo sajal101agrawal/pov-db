@@ -83,9 +83,12 @@ Purpose: one dashboard-ready row per symbol per trade date.
 
 Important columns:
 
-- `iv_30/iv_60/iv_90`: synthetic constant-maturity IVs, decimal annualized.
-- `call_iv_30/call_iv_60/call_iv_90`: synthetic constant-maturity ATM call IVs.
-- `put_iv_30/put_iv_60/put_iv_90`: synthetic constant-maturity ATM put IVs.
+- `iv_30/iv_60/iv_90`: average ATM IVs from the first/second/third selected expiry buckets,
+  decimal annualized.
+- `call_iv_30/call_iv_60/call_iv_90`: ATM call IVs from the first/second/third selected
+  expiry buckets.
+- `put_iv_30/put_iv_60/put_iv_90`: ATM put IVs from the first/second/third selected expiry
+  buckets. Forward-factor rows use the same near-expiry ATM strike across those expiry buckets.
 - `expiry_30d/expiry_60d/expiry_90d`: first/second/third monthly exchange-expiry buckets.
 - `dte_30/dte_60/dte_90`: actual calendar days from `trade_date` to the selected expiry.
 - `rv_10/rv_20/rv_30/rv_60/rv_90`: Yang-Zhang realized vol, decimal annualized.
@@ -95,12 +98,15 @@ Important columns:
 - `rv_calculation_version`: calculation lineage; version 2 is corporate-action aware.
 - `vrp_signal_enabled`: true only when adjusted RV30 and lagged IV30 are usable.
 - `vrp`: `iv_30(20 trading days earlier) - rv_30(today)`.
-- `fwdv_3060`: synthetic forward volatility between target 30D and 60D maturities.
-- `fwdfct_3060`: Average Forward Factor, `(iv_30 / iv_60) - 1`. The database
+- `fwdv_3060`: forward volatility between the first and second selected expiry buckets, using
+  actual `dte_30` and `dte_60`.
+- `fwdfct_3060`: Average Forward Factor, `(iv_30 / fwdv_3060) - 1`. The database
   name is retained for compatibility.
 - `call_fwdfct_3060`: Call Forward Factor from `call_iv_30` and `call_iv_60`.
 - `put_fwdfct_3060`: Put Forward Factor from `put_iv_30` and `put_iv_60`.
-- `iv_slope_3060`: `(iv_60 - iv_30) / 30`.
+- `call_fwdfct_3060_percentile` / `put_fwdfct_3060_percentile`: separate rolling historical
+  percentile ranks for call and put Forward Factor.
+- `iv_slope_3060`: `(iv_60 - iv_30) / (dte_60 - dte_30)`.
 - `skew_20/25/30`: put IV minus call IV at the closest target deltas.
 - `avg_option_volume`: total traded option contracts for the symbol/date, summed across all
   CE and PE contracts in `options_historical`.

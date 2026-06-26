@@ -120,13 +120,18 @@ historical DB values, normalize it to decimal volatility:
 Prices, OI, volume, and bid/ask can be stored as reported after numeric validation.
 
 Historical contract IV/Greeks are still recalculated internally from NSE bhavcopy using
-Black-Scholes-Merton. Kite live IV is calculated from quote prices. Dhan full-chain snapshots include
-Greeks; Kite and NSE fallback snapshots do not currently include live Greeks.
+Black-Scholes-Merton. Kite live IV is calculated from quote prices using top-of-book mid
+`(best_bid + best_ask) / 2` when both sides are positive and crossed markets are absent; LTP is
+only a fallback when usable bid/ask depth is unavailable and reported volume is positive. Dhan
+full-chain snapshots include Greeks; Kite and NSE fallback snapshots do not currently include live
+Greeks.
 
 The live quote payload overlays option-chain IV analytics onto the latest EOD baseline:
 
 - `iv_30/60/90`, `call_iv_30/60/90`, and `put_iv_30/60/90` are recomputed from live ATM IV across
   the 30/60/90 expiry hints. Call and put legs remain separate.
+- Kite selects the first expiry ATM strike from live spot, then requests the same strike for later
+  expiries when available.
 - `fwdv_3060`, `fwdfct_3060` (average), `call_fwdfct_3060`, `put_fwdfct_3060`, `fev_30`, and
   `iv_slope_3060` reuse the same formula helpers as the EOD pipeline.
 - The average IV/factor path requires both call and put IV for a live tenor. A missing side leaves

@@ -309,6 +309,8 @@ FILTERABLE_NUMERIC = {
     "call_fwdfct_3060":  "sdm.call_fwdfct_3060",
     "put_fwdfct_3060":   "sdm.put_fwdfct_3060",
     "max_fwdfct_3060":   "GREATEST(sdm.call_fwdfct_3060, sdm.put_fwdfct_3060)",
+    "call_fwdfct_3060_percentile": "sdm.call_fwdfct_3060_percentile",
+    "put_fwdfct_3060_percentile": "sdm.put_fwdfct_3060_percentile",
     "iv_slope_3060":     "sdm.iv_slope_3060",
     "rv_10":             "CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_10 END",
     "rv_20":             "CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_20 END",
@@ -351,6 +353,8 @@ LIVE_OVERLAY_NUMERIC_FIELDS = {
     "call_fwdfct_3060",
     "put_fwdfct_3060",
     "max_fwdfct_3060",
+    "call_fwdfct_3060_percentile",
+    "put_fwdfct_3060_percentile",
     "iv_30",
     "iv_60",
     "iv_90",
@@ -902,6 +906,18 @@ async def symbol_term_structure(
                        ROUND(
                            (PERCENT_RANK() OVER (ORDER BY fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
                        )::float AS fwdfct_3060_percentile,
+                       COALESCE(
+                           call_fwdfct_3060_percentile::float,
+                           ROUND(
+                               (PERCENT_RANK() OVER (ORDER BY call_fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
+                           )::float
+                       ) AS call_fwdfct_3060_percentile,
+                       COALESCE(
+                           put_fwdfct_3060_percentile::float,
+                           ROUND(
+                               (PERCENT_RANK() OVER (ORDER BY put_fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
+                           )::float
+                       ) AS put_fwdfct_3060_percentile,
                        ROUND(
                            (PERCENT_RANK() OVER (ORDER BY iv_slope_3060 NULLS FIRST) * 100)::numeric, 2
                        )::float AS slope_percentile
@@ -936,6 +952,7 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         return result
 
     current = dict(result.get("current") or {})
+    history = [dict(item) for item in result.get("history", [])]
     live_keys = [
         "current_price",
         "last_price",
@@ -963,6 +980,8 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         "call_fwdfct_3060",
         "put_fwdfct_3060",
         "max_fwdfct_3060",
+        "call_fwdfct_3060_percentile",
+        "put_fwdfct_3060_percentile",
         "fev_30",
         "iv_slope_3060",
         "iv_term_structure_source",
@@ -978,10 +997,10 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
     for key in live_keys:
         if key in live:
             current[key] = live[key]
+    _refresh_current_forward_factor_percentiles(history, current)
     current["is_live"] = True
     current["snapshot_time"] = live.get("snapshot_time")
 
-    history = [dict(item) for item in result.get("history", [])]
     if history:
         history[-1] = {**history[-1], **current}
     else:
@@ -1024,6 +1043,8 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
         "call_fwdfct_3060",
         "put_fwdfct_3060",
         "max_fwdfct_3060",
+        "call_fwdfct_3060_percentile",
+        "put_fwdfct_3060_percentile",
         "fev_30",
         "iv_slope_3060",
         "iv30_rv30_ratio",
@@ -1083,11 +1104,47 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
     )
 
     result = [dict(item) for item in history]
+    _refresh_current_forward_factor_percentiles(result, current)
     if result and _date_to_string(result[-1].get("trade_date")) == trade_date:
         result[-1] = {**result[-1], **current}
     else:
         result.append(current)
     return result
+
+
+def _refresh_current_forward_factor_percentiles(
+    history: list[dict[str, Any]],
+    current: dict[str, Any],
+) -> None:
+    fields = {
+        "fwdfct_3060": "fwdfct_3060_percentile",
+        "call_fwdfct_3060": "call_fwdfct_3060_percentile",
+        "put_fwdfct_3060": "put_fwdfct_3060_percentile",
+    }
+    for value_field, percentile_field in fields.items():
+        percentile = _percent_rank_current(history[:-1], value_field, current.get(value_field))
+        if percentile is not None:
+            current[percentile_field] = percentile
+
+
+def _percent_rank_current(
+    history: list[dict[str, Any]],
+    field: str,
+    current_value: Any,
+) -> float | None:
+    current_number = _float_or_none(current_value)
+    if current_number is None:
+        return None
+    values = [
+        number
+        for item in history
+        if (number := _float_or_none(item.get(field))) is not None
+    ]
+    values.append(current_number)
+    if len(values) <= 1:
+        return 0.0
+    less = sum(1 for value in values if value < current_number)
+    return round(100.0 * less / (len(values) - 1), 2)
 
 
 def _date_from_snapshot(value: Any) -> str | None:

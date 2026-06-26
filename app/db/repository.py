@@ -113,6 +113,8 @@ class MarketRepository:
                    sdm.fwdfct_3060::float,
                    sdm.call_fwdfct_3060::float,
                    sdm.put_fwdfct_3060::float,
+                   sdm.call_fwdfct_3060_percentile::float,
+                   sdm.put_fwdfct_3060_percentile::float,
                    sdm.fev_30::float,
                    sdm.iv_slope_3060::float,
                    sdm.dte_30,
@@ -970,6 +972,16 @@ class MarketRepository:
                            100.0 * percent_rank(cur.iv_90) WITHIN GROUP (ORDER BY h.iv_90)
                            FILTER (WHERE h.iv_90 IS NOT NULL)
                        END AS iv90_pct,
+                       CASE WHEN cur.call_fwdfct_3060 IS NULL THEN NULL ELSE
+                           100.0 * percent_rank(cur.call_fwdfct_3060)
+                           WITHIN GROUP (ORDER BY h.call_fwdfct_3060)
+                           FILTER (WHERE h.call_fwdfct_3060 IS NOT NULL)
+                       END AS call_ff_pct,
+                       CASE WHEN cur.put_fwdfct_3060 IS NULL THEN NULL ELSE
+                           100.0 * percent_rank(cur.put_fwdfct_3060)
+                           WITHIN GROUP (ORDER BY h.put_fwdfct_3060)
+                           FILTER (WHERE h.put_fwdfct_3060 IS NOT NULL)
+                       END AS put_ff_pct,
                        CASE
                            WHEN cur.vrp IS NULL
                              OR BOOL_OR(h.rv_calculation_version < 2)
@@ -980,7 +992,9 @@ class MarketRepository:
                        END AS vrp_pct
                 FROM symbol_daily_metrics cur
                 JOIN LATERAL (
-                    SELECT iv_30, iv_60, iv_90, vrp,
+                    SELECT iv_30, iv_60, iv_90,
+                           call_fwdfct_3060, put_fwdfct_3060,
+                           vrp,
                            vrp_signal_enabled, rv_calculation_version
                     FROM symbol_daily_metrics h
                     WHERE h.symbol = cur.symbol
@@ -989,7 +1003,8 @@ class MarketRepository:
                     LIMIT 252
                 ) h ON TRUE
                 WHERE cur.trade_date = $1
-                GROUP BY cur.symbol, cur.iv_30, cur.iv_60, cur.iv_90, cur.vrp
+                GROUP BY cur.symbol, cur.iv_30, cur.iv_60, cur.iv_90,
+                         cur.call_fwdfct_3060, cur.put_fwdfct_3060, cur.vrp
             ),
             ranked AS (
                 SELECT symbol,
@@ -1002,6 +1017,8 @@ class MarketRepository:
             SET iv_30_percentile = hist.iv30_pct,
                 iv_60_percentile = hist.iv60_pct,
                 iv_90_percentile = hist.iv90_pct,
+                call_fwdfct_3060_percentile = hist.call_ff_pct,
+                put_fwdfct_3060_percentile = hist.put_ff_pct,
                 vrp_percentile = hist.vrp_pct,
                 skew_percentile = ranked.skew_percentile,
                 skew_rank = ranked.skew_rank,
@@ -1236,6 +1253,8 @@ class MarketRepository:
                    -- Forward volatility
                    fwdv_3060::float, fwdfct_3060::float,
                    call_fwdfct_3060::float, put_fwdfct_3060::float, fev_30::float,
+                   call_fwdfct_3060_percentile::float,
+                   put_fwdfct_3060_percentile::float,
                    -- Skew (all delta levels)
                    skew_20::float, skew_25::float, skew_30::float, smoothed_skew::float,
                    -- IV/RV and IV/FEV ratios
@@ -1244,6 +1263,8 @@ class MarketRepository:
                    daily_rsi::float, weekly_rsi::float,
                    -- Percentiles / ranks
                    iv_30_percentile::float, iv_60_percentile::float, iv_90_percentile::float,
+                   call_fwdfct_3060_percentile::float,
+                   put_fwdfct_3060_percentile::float,
                    vrp_percentile::float, skew_percentile::float, skew_rank,
                    -- Volume
                    avg_option_volume::float

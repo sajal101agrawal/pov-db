@@ -53,9 +53,11 @@ Expected IV-null reasons:
 - Deep ITM/OTM contracts where bisection cannot bracket a volatility.
 - Stale zero-volume contract prices in bhavcopy.
 
-## Constant-Maturity IV
+## Selected-Expiry ATM IV
 
-`iv_30`, `iv_60`, and `iv_90` are synthetic constant-maturity IVs. They are not the raw IV of the selected exchange expiry.
+`iv_30`, `iv_60`, and `iv_90` are the average ATM IVs from the first, second, and third selected
+exchange-expiry buckets available on that trade date. The field names are retained for API
+compatibility.
 
 For each expiry, the pipeline takes ATM IV:
 
@@ -63,7 +65,8 @@ For each expiry, the pipeline takes ATM IV:
 ATM_IV = average(ATM_CE_IV, ATM_PE_IV)
 ```
 
-The same expiry-specific ATM strike is also retained by option side:
+The ATM strike is selected from the first expiry bucket using the same-day underlying close and is
+reused for the second and third expiry buckets:
 
 ```text
 ATM strike = strike closest to the same-day underlying close
@@ -71,34 +74,16 @@ Call ATM IV = valid CE IV at the ATM strike
 Put ATM IV  = valid PE IV at the ATM strike
 ```
 
-Variance interpolation is performed independently for the average, call, and put series. The
-persisted fields are `iv_30/60/90`, `call_iv_30/60/90`, and `put_iv_30/60/90`. A missing call leg
-is never replaced by the put IV (and vice versa). The average series continues to average whichever
-valid ATM legs are available, preserving the historical behavior.
-
-Then it interpolates in variance space:
-
-```text
-T1 = near_dte / 365
-T2 = far_dte / 365
-T  = target_dte / 365
-
-variance_target = (
-  ((T2 - T) / (T2 - T1)) * near_iv^2 * T1
-  + ((T - T1) / (T2 - T1)) * far_iv^2 * T2
-) / T
-
-iv_target = sqrt(variance_target)
-```
-
-If no expiry exists on one side of the target, the nearest available expiry IV is used for the synthetic constant-maturity value.
+The persisted fields are `iv_30/60/90`, `call_iv_30/60/90`, and `put_iv_30/60/90`. A missing call
+leg is never replaced by the put IV (and vice versa). The average series continues to average
+whichever valid ATM legs are available.
 
 Important DTE convention:
 
 - `expiry_30d`, `expiry_60d`, `expiry_90d` store the first, second, and third monthly exchange-expiry buckets available on that trade date. For index symbols with weeklies, each calendar month is collapsed to its latest expiry.
 - `dte_30`, `dte_60`, `dte_90` store the actual calendar-day difference between that selected expiry and `trade_date`.
 - Example: on `2021-06-14`, RELIANCE monthly expiries include `2021-06-24`, `2021-07-29`, and `2021-08-26`, so the selected DTEs are `10`, `45`, and `73`.
-- Constant-maturity formulas still use the target horizons `30`, `60`, and `90`; the DTE columns are metadata for the selected exchange expiries.
+- Forward-volatility and slope formulas use these actual selected-expiry DTEs.
 
 ## Realized Volatility
 
@@ -165,13 +150,13 @@ Null policy:
 Forward vol between 30 and 60 days:
 
 ```text
-fwdv_3060 = sqrt((iv_60^2 * 60 - iv_30^2 * 30) / 30)
+fwdv_3060 = sqrt((iv_60^2 * dte_60 - iv_30^2 * dte_30) / (dte_60 - dte_30))
 ```
 
 Average Forward Factor (legacy field retained for API compatibility):
 
 ```text
-fwdfct_3060 = (iv_30 / iv_60) - 1
+fwdfct_3060 = (iv_30 / fwdv_3060) - 1
 ```
 
 For live data, the average IV term used by `fwdfct_3060` requires both ATM call IV and ATM put IV
@@ -181,12 +166,17 @@ independently, but the average forward factor remains null.
 Call and Put Forward Factors apply the same formula independently:
 
 ```text
-call_fwdv_3060 = sqrt((call_iv_60^2 * 60 - call_iv_30^2 * 30) / 30)
-call_fwdfct_3060 = (call_iv_30 / call_iv_60) - 1
+call_fwdv_3060 = sqrt((call_iv_60^2 * dte_60 - call_iv_30^2 * dte_30) / (dte_60 - dte_30))
+call_fwdfct_3060 = (call_iv_30 / call_fwdv_3060) - 1
 
-put_fwdv_3060 = sqrt((put_iv_60^2 * 60 - put_iv_30^2 * 30) / 30)
-put_fwdfct_3060 = (put_iv_30 / put_iv_60) - 1
+put_fwdv_3060 = sqrt((put_iv_60^2 * dte_60 - put_iv_30^2 * dte_30) / (dte_60 - dte_30))
+put_fwdfct_3060 = (put_iv_30 / put_fwdv_3060) - 1
 ```
+
+Historical rows select the ATM strike from the first selected expiry bucket using that date's spot
+price, then reuse the same strike in the second and third expiry buckets. The separate call and put
+Forward Factor percentile fields are `call_fwdfct_3060_percentile` and
+`put_fwdfct_3060_percentile`.
 
 Dashboard rating and the Golden Mispricing Strategy use the required OR rule. Equivalently, the
 screening value is `max(call_fwdfct_3060, put_fwdfct_3060)`, ignoring null sides. A symbol crosses
@@ -195,7 +185,7 @@ the strategy threshold when either available side is greater than `0.16` (`16%`)
 Slope:
 
 ```text
-iv_slope_3060 = (iv_60 - iv_30) / 30
+iv_slope_3060 = (iv_60 - iv_30) / (dte_60 - dte_30)
 ```
 
 Ratios:

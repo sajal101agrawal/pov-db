@@ -25,7 +25,7 @@ if [[ "${RUN_FORWARD_FACTOR_BACKFILL:-0}" == "1" ]]; then
   docker compose -p pov-db -f docker-compose.prod.yml run --rm api \
     python scripts/backfill_forward_factors.py --execute
 else
-  echo "forward-factor historical backfill not run; existing rows keep null call/put fields"
+  echo "forward-factor historical backfill not run; existing rows keep prior FF values/percentiles"
   echo "preview: docker compose -p pov-db -f docker-compose.prod.yml run --rm api python scripts/backfill_forward_factors.py"
 fi
 

@@ -47,6 +47,8 @@ STATEMENTS = [
     "ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_iv_90 NUMERIC(18,8)",
     "ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_fwdfct_3060 NUMERIC(18,8)",
     "ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_fwdfct_3060 NUMERIC(18,8)",
+    "ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_fwdfct_3060_percentile NUMERIC(6,2)",
+    "ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_fwdfct_3060_percentile NUMERIC(6,2)",
     "ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_90 NUMERIC(18,8)",
     "ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_10_raw NUMERIC(18,8)",
     "ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_20_raw NUMERIC(18,8)",

@@ -106,10 +106,13 @@ def test_live_forward_metrics_use_live_term_structure() -> None:
     assert metrics["iv_30"] == 0.20
     assert metrics["iv_60"] == 0.25
     assert metrics["iv_90"] == 0.30
-    assert math.isclose(metrics["fwdv_3060"], math.sqrt((0.25**2 * 60 - 0.20**2 * 30) / 30))
-    assert math.isclose(metrics["fwdfct_3060"], (0.20 / 0.25) - 1.0)
-    assert math.isclose(metrics["call_fwdfct_3060"], 0.22 / 0.26 - 1.0)
-    assert math.isclose(metrics["put_fwdfct_3060"], 0.18 / 0.24 - 1.0)
+    expected_fwdv = math.sqrt((0.25**2 * 60 - 0.20**2 * 30) / 30)
+    assert math.isclose(metrics["fwdv_3060"], expected_fwdv)
+    assert math.isclose(metrics["fwdfct_3060"], (0.20 / expected_fwdv) - 1.0)
+    expected_call_fwdv = math.sqrt((0.26**2 * 60 - 0.22**2 * 30) / 30)
+    expected_put_fwdv = math.sqrt((0.24**2 * 60 - 0.18**2 * 30) / 30)
+    assert math.isclose(metrics["call_fwdfct_3060"], 0.22 / expected_call_fwdv - 1.0)
+    assert math.isclose(metrics["put_fwdfct_3060"], 0.18 / expected_put_fwdv - 1.0)
     assert math.isclose(metrics["iv_slope_3060"], (0.25 - 0.20) / 30)
     assert metrics["iv_term_structure_source"] == "nse:option-chain-v3"
 
@@ -151,8 +154,14 @@ def test_live_forward_metrics_bucket_expiries_as_30_60_90() -> None:
 
     assert math.isclose(metrics["iv_30"], (0.1530 + 0.2288) / 2)
     assert math.isclose(metrics["iv_60"], (0.2163 + 0.2415) / 2)
-    assert math.isclose(metrics["call_fwdfct_3060"], 0.1530 / 0.2163 - 1.0)
-    assert math.isclose(metrics["put_fwdfct_3060"], 0.2288 / 0.2415 - 1.0)
+    expected_call_fwdv = math.sqrt((0.2163**2 * 33 - 0.1530**2 * 5) / (33 - 5))
+    expected_put_fwdv = math.sqrt((0.2415**2 * 33 - 0.2288**2 * 5) / (33 - 5))
+    assert math.isclose(metrics["call_fwdfct_3060"], 0.1530 / expected_call_fwdv - 1.0)
+    assert math.isclose(metrics["put_fwdfct_3060"], 0.2288 / expected_put_fwdv - 1.0)
+    expected_fwdv = math.sqrt(
+        (metrics["iv_60"] ** 2 * 33 - metrics["iv_30"] ** 2 * 5) / (33 - 5)
+    )
+    assert math.isclose(metrics["fwdv_3060"], expected_fwdv)
     assert metrics["iv_90"] is None
     assert metrics["dte_30"] == 5
     assert metrics["dte_60"] == 33
@@ -160,7 +169,7 @@ def test_live_forward_metrics_bucket_expiries_as_30_60_90() -> None:
     assert metrics["fwdfct_3060"] is not None
     assert metrics["call_fwdfct_3060"] is not None
     assert metrics["put_fwdfct_3060"] is not None
-    assert metrics["iv_slope_3060"] is not None
+    assert math.isclose(metrics["iv_slope_3060"], (metrics["iv_60"] - metrics["iv_30"]) / (33 - 5))
 
 
 def test_live_forward_metrics_require_both_sides_for_average_factor() -> None:

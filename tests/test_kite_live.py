@@ -75,6 +75,39 @@ def test_kite_option_summary_calculates_call_put_iv_from_quote_prices() -> None:
     assert summary["live_atm_iv_source"] == "kite:quote:calculated-iv"
 
 
+def test_kite_option_summary_prefers_bid_ask_mid_over_ltp_for_iv() -> None:
+    trade_date = date(2026, 6, 1)
+    expiry = trade_date + timedelta(days=30)
+    spot = 100.0
+    strike = 100.0
+    rate = 0.06
+    call_mid = black_scholes_price(spot, strike, 30 / 365, rate, 0.25, "CE")
+    put_mid = black_scholes_price(spot, strike, 30 / 365, rate, 0.20, "PE")
+    stale_ltp = black_scholes_price(spot, strike, 30 / 365, rate, 0.60, "CE")
+    request = {
+        "symbol": "ABC",
+        "spot": spot,
+        "expiry": expiry,
+        "strike": strike,
+        "strike_count": 3,
+        "ce_key": "NFO:ABC26JUN100CE",
+        "pe_key": "NFO:ABC26JUN100PE",
+    }
+    quotes = {
+        "data": {
+            "NFO:ABC26JUN100CE": _quote_with_depth(stale_ltp, call_mid - 0.05, call_mid + 0.05, 10),
+            "NFO:ABC26JUN100PE": _quote_with_depth(stale_ltp, put_mid - 0.05, put_mid + 0.05, 20),
+        }
+    }
+
+    summary = live_service._kite_option_summary_from_quotes(request, quotes, trade_date, rate)
+
+    assert summary is not None
+    assert math.isclose(summary["live_atm_call_iv"], 0.25, rel_tol=1e-5)
+    assert math.isclose(summary["live_atm_put_iv"], 0.20, rel_tol=1e-5)
+    assert math.isclose(summary["live_atm_iv"], 0.225, rel_tol=1e-5)
+
+
 def test_kite_option_summary_ignores_stale_ltp_without_depth_or_volume() -> None:
     trade_date = date(2026, 6, 1)
     expiry = trade_date + timedelta(days=30)
@@ -115,6 +148,23 @@ def test_kite_expiry_targets_are_distinct_when_nearest_targets_overlap() -> None
     targets = live_service._kite_expiry_targets(rows, trade_date)
 
     assert targets == [date(2026, 7, 28), date(2026, 8, 25)]
+
+
+def test_kite_option_request_uses_preferred_same_strike_for_far_expiry() -> None:
+    expiry = date(2026, 7, 28)
+    rows = [
+        _instrument(expiry, 100.0, "CE"),
+        _instrument(expiry, 100.0, "PE"),
+        _instrument(expiry, 105.0, "CE"),
+        _instrument(expiry, 105.0, "PE"),
+    ]
+
+    request = live_service._kite_atm_option_request("ABC", 104.0, rows, expiry, 100.0)
+
+    assert request is not None
+    assert request["strike"] == 100.0
+    assert request["ce_key"] == "NFO:ABC100CE"
+    assert request["pe_key"] == "NFO:ABC100PE"
 
 
 def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
@@ -298,4 +348,28 @@ def _quote(price: float, volume: int) -> dict:
             "buy": [{"price": price}],
             "sell": [{"price": price}],
         },
+    }
+
+
+def _quote_with_depth(last_price: float, bid: float, ask: float, volume: int) -> dict:
+    return {
+        "last_price": last_price,
+        "volume": volume,
+        "oi": volume * 10,
+        "depth": {
+            "buy": [{"price": bid}],
+            "sell": [{"price": ask}],
+        },
+    }
+
+
+def _instrument(expiry: date, strike: float, option_type: str) -> dict:
+    return {
+        "exchange": "NFO",
+        "segment": "NFO-OPT",
+        "name": "ABC",
+        "instrument_type": option_type,
+        "expiry": expiry,
+        "strike": strike,
+        "tradingsymbol": f"ABC{int(strike)}{option_type}",
     }

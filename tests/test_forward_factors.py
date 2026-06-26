@@ -9,7 +9,7 @@ from app.services.forward_factors import compute_forward_factor_metrics
 def test_forward_factors_use_separate_atm_call_and_put_iv_term_structures() -> None:
     trade_date = date(2026, 6, 1)
     chain = []
-    for dte, call_iv, put_iv in ((30, 0.30, 0.20), (60, 0.27, 0.19), (90, 0.26, 0.18)):
+    for dte, call_iv, put_iv in ((5, 0.30, 0.20), (33, 0.27, 0.19), (61, 0.26, 0.18)):
         expiry = trade_date + timedelta(days=dte)
         chain.extend(
             [
@@ -22,13 +22,18 @@ def test_forward_factors_use_separate_atm_call_and_put_iv_term_structures() -> N
 
     metrics = compute_forward_factor_metrics(chain, trade_date, 102.0)
 
+    call_fwdv = math.sqrt((0.27**2 * 33 - 0.30**2 * 5) / (33 - 5))
+    put_fwdv = math.sqrt((0.19**2 * 33 - 0.20**2 * 5) / (33 - 5))
+    average_fwdv = math.sqrt((0.23**2 * 33 - 0.25**2 * 5) / (33 - 5))
     assert metrics["atm_strike"] == 100.0
+    assert metrics["dte_30"] == 5
+    assert metrics["dte_60"] == 33
     assert metrics["call_iv_30"] == 0.30
     assert metrics["put_iv_30"] == 0.20
     assert metrics["iv_30"] == 0.25
-    assert math.isclose(metrics["call_fwdfct_3060"], 0.30 / 0.27 - 1)
-    assert math.isclose(metrics["put_fwdfct_3060"], 0.20 / 0.19 - 1)
-    assert math.isclose(metrics["fwdfct_3060"], 0.25 / 0.23 - 1)
+    assert math.isclose(metrics["call_fwdfct_3060"], 0.30 / call_fwdv - 1)
+    assert math.isclose(metrics["put_fwdfct_3060"], 0.20 / put_fwdv - 1)
+    assert math.isclose(metrics["fwdfct_3060"], 0.25 / average_fwdv - 1)
 
 
 def test_missing_call_leg_does_not_borrow_put_iv_for_call_forward_factor() -> None:
@@ -42,9 +47,27 @@ def test_missing_call_leg_does_not_borrow_put_iv_for_call_forward_factor() -> No
     metrics = compute_forward_factor_metrics(chain, trade_date, 100.0)
 
     assert metrics["call_iv_30"] == 0.30
-    assert metrics["call_iv_60"] == 0.30
-    assert metrics["call_fwdfct_3060"] == 0.0
+    assert metrics["call_iv_60"] is None
+    assert metrics["call_fwdfct_3060"] is None
     assert metrics["put_fwdfct_3060"] is not None
+
+
+def test_forward_factors_use_same_near_atm_strike_for_far_expiry() -> None:
+    trade_date = date(2026, 6, 1)
+    chain = [
+        _option(trade_date + timedelta(days=7), 100.0, "CE", 0.30),
+        _option(trade_date + timedelta(days=7), 100.0, "PE", 0.20),
+        _option(trade_date + timedelta(days=35), 105.0, "CE", 0.27),
+        _option(trade_date + timedelta(days=35), 105.0, "PE", 0.19),
+    ]
+
+    metrics = compute_forward_factor_metrics(chain, trade_date, 101.0)
+
+    assert metrics["atm_strike"] == 100.0
+    assert metrics["call_iv_60"] is None
+    assert metrics["put_iv_60"] is None
+    assert metrics["call_fwdfct_3060"] is None
+    assert metrics["put_fwdfct_3060"] is None
 
 
 def _option(expiry: date, strike: float, option_type: str, iv: float) -> dict:

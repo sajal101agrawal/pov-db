@@ -5,7 +5,6 @@ from typing import Any
 
 from app.services.calculations import (
     MAX_ANALYTICS_IV,
-    constant_maturity_iv,
     forward_factor,
     forward_volatility,
 )
@@ -16,12 +15,11 @@ def compute_forward_factor_metrics(
     trade_date: date,
     spot_close: float,
 ) -> dict[str, float | date | int | None]:
-    """Calculate average, call, and put ATM term structures and 30/60 factors.
+    """Calculate average, call, and put ATM term structures and forward factors.
 
-    The ATM strike is selected independently for every expiry as the strike
-    closest to the underlying close. Constant-maturity IV uses all available
-    future expiries and the same variance interpolation as the legacy average
-    calculation.
+    The ATM strike is selected from the first available expiry bucket using the
+    same-day spot close. Later expiry buckets use that same strike so the
+    historical calculation mirrors the calendar-spread trade.
     """
     expiries = sorted(
         {
@@ -36,71 +34,39 @@ def compute_forward_factor_metrics(
         for index in range(3)
     ]
 
-    terms: list[dict[str, Any]] = []
-    by_expiry: dict[date, dict[str, Any]] = {}
-    for expiry in expiries:
-        rows = [row for row in chain if row.get("expiry_date") == expiry]
-        strikes = {
-            float(row["strike_price"])
-            for row in rows
-            if row.get("strike_price") is not None
-        }
-        if not strikes:
-            continue
-        strike = min(strikes, key=lambda value: (abs(value - spot_close), value))
-        ce = next(
-            (
-                row
-                for row in rows
-                if float(row["strike_price"]) == strike and row.get("option_type") == "CE"
-            ),
-            None,
-        )
-        pe = next(
-            (
-                row
-                for row in rows
-                if float(row["strike_price"]) == strike and row.get("option_type") == "PE"
-            ),
-            None,
-        )
-        call_iv = analytics_iv(ce.get("iv") if ce else None)
-        put_iv = analytics_iv(pe.get("iv") if pe else None)
-        average_iv = _average_available(call_iv, put_iv)
-        term = {
-            "expiry_date": expiry,
-            "dte": (expiry - trade_date).days,
-            "strike": strike,
-            "ce": ce,
-            "pe": pe,
-            "iv": average_iv,
-            "call_iv": call_iv,
-            "put_iv": put_iv,
-        }
-        terms.append(term)
-        by_expiry[expiry] = term
+    near_expiry = selected_expiries[0]
+    near_rows = _rows_for_expiry(chain, near_expiry) if near_expiry else []
+    near_strikes = _available_strikes(near_rows)
+    atm_strike = (
+        min(near_strikes, key=lambda value: (abs(value - spot_close), value))
+        if near_strikes
+        else None
+    )
+
+    terms: list[dict[str, Any] | None] = [
+        _term_for_expiry(chain, expiry, trade_date, atm_strike)
+        if expiry is not None and atm_strike is not None
+        else None
+        for expiry in selected_expiries
+    ]
 
     values: dict[str, float | date | int | None] = {}
-    for tenor in (30, 60, 90):
-        values[f"iv_{tenor}"] = constant_maturity_from_terms(terms, tenor, "iv")
-        values[f"call_iv_{tenor}"] = constant_maturity_from_terms(
-            terms, tenor, "call_iv"
-        )
-        values[f"put_iv_{tenor}"] = constant_maturity_from_terms(
-            terms, tenor, "put_iv"
-        )
+    for index, tenor in enumerate((30, 60, 90)):
+        values[f"iv_{tenor}"] = _term_value(terms, index, "iv")
+        values[f"call_iv_{tenor}"] = _term_value(terms, index, "call_iv")
+        values[f"put_iv_{tenor}"] = _term_value(terms, index, "put_iv")
 
     for index, tenor in enumerate((30, 60, 90)):
         expiry = selected_expiries[index]
         values[f"expiry_{tenor}d"] = expiry
         values[f"dte_{tenor}"] = (expiry - trade_date).days if expiry else None
 
-    primary = by_expiry.get(selected_expiries[0]) if selected_expiries[0] else None
+    primary = terms[0]
     ce = primary.get("ce") if primary else None
     pe = primary.get("pe") if primary else None
     values.update(
         {
-            "atm_strike": primary.get("strike") if primary else None,
+            "atm_strike": atm_strike,
             "nearest_ce_iv": primary.get("call_iv") if primary else None,
             "nearest_pe_iv": primary.get("put_iv") if primary else None,
             "nearest_ce_ltp": _market_price(ce),
@@ -108,40 +74,87 @@ def compute_forward_factor_metrics(
         }
     )
 
-    average_fwdv = forward_volatility(values["iv_30"], values["iv_60"], 30, 60)
+    dte_30 = values["dte_30"]
+    dte_60 = values["dte_60"]
+    average_fwdv = forward_volatility(
+        values["iv_30"], values["iv_60"], dte_30 or 30, dte_60 or 60
+    )
+    call_fwdv = forward_volatility(
+        values["call_iv_30"], values["call_iv_60"], dte_30 or 30, dte_60 or 60
+    )
+    put_fwdv = forward_volatility(
+        values["put_iv_30"], values["put_iv_60"], dte_30 or 30, dte_60 or 60
+    )
     values.update(
         {
             "fwdv_3060": average_fwdv,
-            "fwdfct_3060": forward_factor(values["iv_30"], values["iv_60"]),
-            "call_fwdfct_3060": forward_factor(values["call_iv_30"], values["call_iv_60"]),
-            "put_fwdfct_3060": forward_factor(values["put_iv_30"], values["put_iv_60"]),
+            "fwdfct_3060": forward_factor(values["iv_30"], average_fwdv),
+            "call_fwdfct_3060": forward_factor(values["call_iv_30"], call_fwdv),
+            "put_fwdfct_3060": forward_factor(values["put_iv_30"], put_fwdv),
         }
     )
     return values
 
 
-def constant_maturity_from_terms(
-    terms: list[dict[str, Any]], target_dte: int, value_key: str
-) -> float | None:
-    candidates = [
-        (int(item["dte"]), float(item[value_key]))
-        for item in terms
-        if item.get(value_key) is not None
-        and float(item[value_key]) > 0
-        and int(item["dte"]) > 0
-    ]
-    if not candidates:
+def _term_value(terms: list[dict[str, Any] | None], index: int, key: str) -> float | None:
+    if index >= len(terms) or terms[index] is None:
         return None
-    exact = next((value for dte, value in candidates if dte == target_dte), None)
-    if exact is not None:
-        return exact
-    below = [(dte, value) for dte, value in candidates if dte < target_dte]
-    above = [(dte, value) for dte, value in candidates if dte > target_dte]
-    if below and above:
-        near = max(below, key=lambda item: item[0])
-        far = min(above, key=lambda item: item[0])
-        return constant_maturity_iv(near[1], near[0], far[1], far[0], target_dte)
-    return min(candidates, key=lambda item: abs(item[0] - target_dte))[1]
+    return terms[index].get(key)
+
+
+def _term_for_expiry(
+    chain: list[dict[str, Any]],
+    expiry: date,
+    trade_date: date,
+    strike: float,
+) -> dict[str, Any]:
+    rows = _rows_for_expiry(chain, expiry)
+    ce = _leg_at_strike(rows, strike, "CE")
+    pe = _leg_at_strike(rows, strike, "PE")
+    call_iv = analytics_iv(ce.get("iv") if ce else None)
+    put_iv = analytics_iv(pe.get("iv") if pe else None)
+    average_iv = _average_available(call_iv, put_iv)
+    return {
+        "expiry_date": expiry,
+        "dte": (expiry - trade_date).days,
+        "strike": strike,
+        "ce": ce,
+        "pe": pe,
+        "iv": average_iv,
+        "call_iv": call_iv,
+        "put_iv": put_iv,
+    }
+
+
+def _rows_for_expiry(
+    chain: list[dict[str, Any]],
+    expiry: date | None,
+) -> list[dict[str, Any]]:
+    return [row for row in chain if row.get("expiry_date") == expiry]
+
+
+def _available_strikes(rows: list[dict[str, Any]]) -> set[float]:
+    return {
+        float(row["strike_price"])
+        for row in rows
+        if row.get("strike_price") is not None
+    }
+
+
+def _leg_at_strike(
+    rows: list[dict[str, Any]],
+    strike: float,
+    option_type: str,
+) -> dict[str, Any] | None:
+    return next(
+        (
+            row
+            for row in rows
+            if float(row["strike_price"]) == strike
+            and row.get("option_type") == option_type
+        ),
+        None,
+    )
 
 
 def monthly_expiry_buckets(expiries: list[date]) -> list[date]:

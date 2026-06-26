@@ -226,6 +226,8 @@ CREATE TABLE IF NOT EXISTS symbol_daily_metrics (
     iv_30_percentile NUMERIC(6,2),
     iv_60_percentile NUMERIC(6,2),
     iv_90_percentile NUMERIC(6,2),
+    call_fwdfct_3060_percentile NUMERIC(6,2),
+    put_fwdfct_3060_percentile NUMERIC(6,2),
     vrp_percentile NUMERIC(6,2),
     skew_percentile NUMERIC(6,2),
     skew_rank SMALLINT,

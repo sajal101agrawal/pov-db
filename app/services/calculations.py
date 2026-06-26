@@ -256,10 +256,10 @@ def forward_volatility(iv_30: float | None, iv_60: float | None, dte_30: int = 3
     return math.sqrt(variance)
 
 
-def forward_factor(iv_30: float | None, iv_60: float | None) -> float | None:
-    if iv_30 is None or iv_60 is None or iv_60 <= 0:
+def forward_factor(iv_30: float | None, fwdv_3060: float | None) -> float | None:
+    if iv_30 is None or fwdv_3060 is None or fwdv_3060 <= 0:
         return None
-    return (iv_30 / iv_60) - 1.0
+    return (iv_30 / fwdv_3060) - 1.0
 
 
 def iv_slope(iv_30: float | None, iv_60: float | None, dte_30: int = 30, dte_60: int = 60) -> float | None:

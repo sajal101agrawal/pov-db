@@ -16,18 +16,33 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import get_settings
 from app.db.pool import close_pool, get_pool
+from app.db.repository import MarketRepository
+from app.services.calculations import iv_slope, ratio
 from app.services.forward_factors import compute_forward_factor_metrics
 
 
 FORWARD_FIELDS = (
+    "iv_30",
+    "iv_60",
+    "iv_90",
     "call_iv_30",
     "call_iv_60",
     "call_iv_90",
     "put_iv_30",
     "put_iv_60",
     "put_iv_90",
+    "atm_strike",
+    "nearest_ce_iv",
+    "nearest_pe_iv",
+    "nearest_ce_ltp",
+    "nearest_pe_ltp",
+    "fwdv_3060",
+    "fwdfct_3060",
     "call_fwdfct_3060",
     "put_fwdfct_3060",
+    "fev_30",
+    "iv_slope_3060",
+    "iv30_fev30_ratio",
 )
 
 
@@ -47,6 +62,7 @@ async def main() -> None:
 
     settings = get_settings()
     pool = await get_pool()
+    repository = MarketRepository(pool)
     requested_symbols = (
         [item.strip().upper() for item in args.symbols.split(",") if item.strip()]
         if args.symbols
@@ -121,6 +137,7 @@ async def main() -> None:
         updated = 0
         audited = 0
         skipped_no_chain = 0
+        updated_dates: set[date] = set()
         for symbol_index, symbol in enumerate(symbols, start=1):
             metric_rows = [
                 dict(row)
@@ -156,12 +173,24 @@ async def main() -> None:
                 calculated = compute_forward_factor_metrics(
                     chain, old["trade_date"], old["spot_close"]
                 )
+                calculated["fev_30"] = calculated.get("fwdv_3060")
+                calculated["iv_slope_3060"] = iv_slope(
+                    calculated.get("iv_30"),
+                    calculated.get("iv_60"),
+                    calculated.get("dte_30") or 30,
+                    calculated.get("dte_60") or 60,
+                )
+                calculated["iv30_fev30_ratio"] = ratio(
+                    calculated.get("iv_30"),
+                    calculated.get("fev_30"),
+                )
                 new_values = {field: calculated.get(field) for field in FORWARD_FIELDS}
                 if not materially_changed(old, new_values):
                     continue
                 updates.append(
                     (symbol, old["trade_date"], *(new_values[field] for field in FORWARD_FIELDS))
                 )
+                updated_dates.add(old["trade_date"])
                 audits.append(
                     (
                         run_id,
@@ -200,11 +229,15 @@ async def main() -> None:
                     flush=True,
                 )
 
+        for percentile_date in sorted(updated_dates):
+            await repository.refresh_percentiles(percentile_date)
+
         cache_keys_deleted = await invalidate_forward_factor_cache(settings.redis_url)
         summary.update(
             updated=updated,
             audited_changes=audited,
             skipped_no_chain=skipped_no_chain,
+            percentile_dates_refreshed=len(updated_dates),
             cache_keys_deleted=cache_keys_deleted,
         )
         await pool.execute(
@@ -249,29 +282,52 @@ async def _atm_option_rows(pool: Any, symbol: str, start: date, end: date) -> li
               ON eh.symbol = sdm.symbol AND eh.trade_date = sdm.trade_date
             WHERE sdm.symbol = $1 AND sdm.trade_date BETWEEN $2 AND $3
         ),
-        candidate_strikes AS (
-            SELECT DISTINCT md.trade_date, md.spot_close,
-                            oh.expiry_date, oh.strike_price
+        monthly_expiries AS (
+            SELECT md.trade_date,
+                   MAX(oh.expiry_date) AS expiry_date,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY md.trade_date
+                       ORDER BY date_trunc('month', oh.expiry_date)
+                   ) AS expiry_rank
             FROM metric_dates md
             JOIN options_historical oh
               ON oh.symbol = $1
              AND oh.trade_date = md.trade_date
              AND oh.expiry_date >= md.trade_date
+            GROUP BY md.trade_date, date_trunc('month', oh.expiry_date)
+        ),
+        selected_expiries AS (
+            SELECT trade_date, expiry_date, expiry_rank
+            FROM monthly_expiries
+            WHERE expiry_rank <= 3
+        ),
+        near_strikes AS (
+            SELECT DISTINCT md.trade_date, md.spot_close, oh.strike_price
+            FROM metric_dates md
+            JOIN selected_expiries se
+              ON se.trade_date = md.trade_date
+             AND se.expiry_rank = 1
+            JOIN options_historical oh
+              ON oh.symbol = $1
+             AND oh.trade_date = md.trade_date
+             AND oh.expiry_date = se.expiry_date
         ),
         ranked AS (
             SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY trade_date, expiry_date
+                PARTITION BY trade_date
                 ORDER BY ABS(strike_price - spot_close), strike_price
             ) AS strike_rank
-            FROM candidate_strikes
+            FROM near_strikes
         )
         SELECT oh.trade_date, oh.expiry_date, oh.strike_price::float,
                oh.option_type, oh.iv::float, oh.settle_price::float, oh.close::float
         FROM ranked atm
+        JOIN selected_expiries se
+          ON se.trade_date = atm.trade_date
         JOIN options_historical oh
           ON oh.symbol = $1
          AND oh.trade_date = atm.trade_date
-         AND oh.expiry_date = atm.expiry_date
+         AND oh.expiry_date = se.expiry_date
          AND oh.strike_price = atm.strike_price
          AND oh.option_type IN ('CE', 'PE')
         WHERE atm.strike_rank = 1

@@ -674,9 +674,12 @@ async def _fetch_kite_live_option_summaries(
         targets = _dhan_expiry_targets_from_baseline(baseline.get(symbol, {}))
         if not targets:
             targets = _kite_expiry_targets(rows, now)
+        preferred_strike = None
         for expiry in targets:
-            request = _kite_atm_option_request(symbol, spot, rows, expiry)
+            request = _kite_atm_option_request(symbol, spot, rows, expiry, preferred_strike)
             if request:
+                if preferred_strike is None:
+                    preferred_strike = request["strike"]
                 requests.append(request)
 
     quote_keys = sorted(
@@ -1015,6 +1018,7 @@ def _kite_atm_option_request(
     spot: float,
     rows: list[dict[str, Any]],
     expiry: date,
+    preferred_strike: float | None = None,
 ) -> dict[str, Any] | None:
     expiry_rows = [
         row
@@ -1030,7 +1034,12 @@ def _kite_atm_option_request(
     )
     if not strikes:
         return None
-    atm_strike = min(strikes, key=lambda strike: (abs(strike - spot), strike))
+    if preferred_strike is not None:
+        if preferred_strike not in strikes:
+            return None
+        atm_strike = preferred_strike
+    else:
+        atm_strike = min(strikes, key=lambda strike: (abs(strike - spot), strike))
     ce = _kite_option_row(expiry_rows, atm_strike, "CE")
     pe = _kite_option_row(expiry_rows, atm_strike, "PE")
     if ce is None and pe is None:
@@ -1343,7 +1352,11 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
     put_iv30 = _expiry_bucket_from_terms(terms, 0, "put_iv")
     put_iv60 = _expiry_bucket_from_terms(terms, 1, "put_iv")
     put_iv90 = _expiry_bucket_from_terms(terms, 2, "put_iv")
-    fwdv = forward_volatility(iv30, iv60, 30, 60)
+    near_dte = _expiry_bucket_dte(terms, 0)
+    far_dte = _expiry_bucket_dte(terms, 1)
+    fwdv = forward_volatility(iv30, iv60, near_dte or 30, far_dte or 60)
+    call_fwdv = forward_volatility(call_iv30, call_iv60, near_dte or 30, far_dte or 60)
+    put_fwdv = forward_volatility(put_iv30, put_iv60, near_dte or 30, far_dte or 60)
     metrics: dict[str, Any] = {
         "iv_30": iv30,
         "iv_60": iv60,
@@ -1355,11 +1368,11 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
         "put_iv_60": put_iv60,
         "put_iv_90": put_iv90,
         "fwdv_3060": fwdv,
-        "fwdfct_3060": forward_factor(iv30, iv60),
-        "call_fwdfct_3060": forward_factor(call_iv30, call_iv60),
-        "put_fwdfct_3060": forward_factor(put_iv30, put_iv60),
+        "fwdfct_3060": forward_factor(iv30, fwdv),
+        "call_fwdfct_3060": forward_factor(call_iv30, call_fwdv),
+        "put_fwdfct_3060": forward_factor(put_iv30, put_fwdv),
         "fev_30": fwdv,
-        "iv_slope_3060": iv_slope(iv30, iv60, 30, 60),
+        "iv_slope_3060": iv_slope(iv30, iv60, near_dte or 30, far_dte or 60),
         "iv_term_structure_source": source,
         "forward_analytics_source": source,
         "iv_slope_3060_source": source,
@@ -1476,6 +1489,12 @@ def _expiry_bucket_from_terms(
     if index >= len(terms):
         return None
     return terms[index].get(value_key)
+
+
+def _expiry_bucket_dte(terms: list[dict[str, Any]], index: int) -> int | None:
+    if index >= len(terms):
+        return None
+    return terms[index].get("dte")
 
 
 def _coerce_date(value: Any) -> date | None:
