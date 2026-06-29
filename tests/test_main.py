@@ -6,6 +6,25 @@ from app.core.config import Settings
 from app.main import redact_query
 
 
+class FakeUrl:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def include_query_params(self, **params: str) -> "FakeUrl":
+        separator = "&" if "?" in self.value else "?"
+        query = "&".join(f"{key}={value}" for key, value in params.items())
+        return FakeUrl(f"{self.value}{separator}{query}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class FakeRequest:
+    def __init__(self, accept: str) -> None:
+        self.headers = {"accept": accept}
+        self.url = FakeUrl("https://example.test/api/system-health?symbol=MARUTI")
+
+
 def test_redact_query_masks_sensitive_values() -> None:
     query = "request_token=secret-token&symbol=MARUTI&api_key=raw-api-value&empty="
 
@@ -79,7 +98,9 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
 
     result = asyncio.run(
         routes.system_health(
+            request=FakeRequest("application/json"),
             symbol="maruti",
+            view_format="json",
             settings=settings,
             repo=object(),  # type: ignore[arg-type]
             cache_service=object(),  # type: ignore[arg-type]
@@ -96,3 +117,33 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
     }
     assert result["checks"]["kite"]["required"] is True
     assert result["checks"]["yahoo"]["required"] is False
+
+
+def test_system_health_can_render_browser_html(monkeypatch) -> None:
+    async def ok(*args, **kwargs):
+        return {"status": "ok"}
+
+    monkeypatch.setattr(routes, "_check_database", ok)
+    monkeypatch.setattr(routes, "_check_redis", ok)
+    monkeypatch.setattr(routes, "_check_kite", ok)
+    monkeypatch.setattr(routes, "_check_nse_option_chain", ok)
+    monkeypatch.setattr(routes, "_check_yahoo", ok)
+    monkeypatch.setattr(routes, "_check_dhan", ok)
+    monkeypatch.setattr(routes, "_check_live_state", ok)
+
+    response = asyncio.run(
+        routes.system_health(
+            request=FakeRequest("text/html,application/xhtml+xml"),
+            symbol="reliance",
+            view_format="auto",
+            settings=Settings(),
+            repo=object(),  # type: ignore[arg-type]
+            cache_service=object(),  # type: ignore[arg-type]
+        )
+    )
+
+    body = response.body.decode()
+    assert response.status_code == 200
+    assert "System Health" in body
+    assert "RELIANCE" in body
+    assert "Raw JSON" in body

@@ -8,7 +8,7 @@ from html import escape
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from redis.asyncio import Redis
 
@@ -66,13 +66,20 @@ async def health(repo: MarketRepository = Depends(repository)) -> dict:
     return {"ok": True, "latest_trade_date": latest}
 
 
-@router.get("/system-health")
+@router.get("/system-health", response_model=None)
 async def system_health(
+    request: Request,
     symbol: str = Query(default="RELIANCE", description="Symbol to probe live providers with"),
+    view_format: str = Query(
+        default="auto",
+        alias="format",
+        pattern="^(auto|json|html)$",
+        description="Use html for browser view, json for raw payload, or auto by Accept header",
+    ),
     settings: Settings = Depends(get_settings),
     repo: MarketRepository = Depends(repository),
     cache_service: CacheService = Depends(cache),
-) -> dict:
+) -> dict | HTMLResponse:
     """On-demand browser-friendly health check for DB, Redis, and live data providers."""
     probe_symbol = (symbol or "RELIANCE").strip().upper()
     checks = dict(
@@ -104,7 +111,7 @@ async def system_health(
     )
     status = _overall_health_status(checks)
     current_sources = _current_source_config(settings)
-    return {
+    payload = {
         "ok": status != "fail",
         "status": status,
         "generated_at": datetime.now(IST).isoformat(),
@@ -124,6 +131,10 @@ async def system_health(
         },
         "checks": checks,
     }
+    if _system_health_wants_html(request, view_format):
+        json_url = str(request.url.include_query_params(format="json"))
+        return HTMLResponse(_system_health_html(payload, json_url))
+    return payload
 
 
 async def _run_health_check(
@@ -429,6 +440,275 @@ def _snapshot_age_seconds(value: Any) -> float | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=IST)
     return round((datetime.now(IST) - parsed.astimezone(IST)).total_seconds(), 2)
+
+
+def _system_health_wants_html(request: Request, view_format: str) -> bool:
+    selected = str(view_format or "auto").lower().strip()
+    if selected == "html":
+        return True
+    if selected == "json":
+        return False
+    accept = request.headers.get("accept", "").lower()
+    return "text/html" in accept
+
+
+def _system_health_html(payload: dict[str, Any], json_url: str) -> str:
+    status = str(payload.get("status") or "ok").lower()
+    status_class = _health_status_class(status)
+    symbol = escape(str(payload.get("symbol") or ""))
+    generated_at = escape(str(payload.get("generated_at") or ""))
+    current_sources = payload.get("current_sources") or {}
+    config = payload.get("config") or {}
+    market = config.get("market_window_ist") or {}
+    checks = payload.get("checks") or {}
+    cards = "\n".join(
+        _system_health_card_html(name, checks[name])
+        for name in (
+            "live_state",
+            "kite",
+            "nse_option_chain",
+            "dhan",
+            "yahoo",
+            "database",
+            "redis",
+        )
+        if name in checks
+    )
+    raw_json = escape(json.dumps(payload, indent=2, default=str))
+    json_href = escape(json_url, quote=True)
+    source_chips = "\n".join(
+        _source_chip_html(label, current_sources.get(key))
+        for label, key in (
+            ("Quote", "live_quote_provider"),
+            ("Option Summary", "live_option_summary_provider"),
+            ("Option Chain", "live_option_chain_provider"),
+        )
+    )
+    market_state = "Open now" if market.get("in_window_now") else "Closed now"
+    market_window = escape(f"{market.get('start') or '-'} to {market.get('end') or '-'} IST")
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Health - {symbol}</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #111417;
+      --panel: #1b2025;
+      --panel-2: #222830;
+      --border: #343c45;
+      --text: #f4f7fa;
+      --muted: #aab2bd;
+      --green: #26c281;
+      --amber: #f3b43f;
+      --red: #ff5c66;
+      --gray: #7c8794;
+      --accent: #0ea59a;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }}
+    main {{ width: min(1180px, calc(100vw - 32px)); margin: 0 auto; padding: 28px 0 40px; }}
+    header {{
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-start;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }}
+    h1 {{ margin: 0; font-size: 28px; letter-spacing: 0; }}
+    .subtle {{ color: var(--muted); font-size: 13px; margin-top: 6px; }}
+    .actions {{ display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }}
+    .button {{
+      color: var(--text);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      padding: 9px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 650;
+    }}
+    .button.primary {{ background: var(--accent); border-color: var(--accent); color: #ffffff; }}
+    .summary {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 20px 0;
+    }}
+    .metric, .card, details {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }}
+    .metric {{ padding: 16px; min-height: 92px; }}
+    .label {{ color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }}
+    .value {{ margin-top: 8px; font-size: 18px; font-weight: 760; overflow-wrap: anywhere; }}
+    .sources {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 20px; }}
+    .chip {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      border-radius: 999px;
+      padding: 7px 11px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .chip strong {{ color: var(--text); }}
+    .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
+    .card {{ padding: 16px; }}
+    .card-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }}
+    .card h2 {{ margin: 0; font-size: 17px; letter-spacing: 0; }}
+    .badge {{
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      border: 1px solid transparent;
+    }}
+    .ok {{ color: var(--green); border-color: rgba(38, 194, 129, 0.35); background: rgba(38, 194, 129, 0.10); }}
+    .warn {{ color: var(--amber); border-color: rgba(243, 180, 63, 0.38); background: rgba(243, 180, 63, 0.10); }}
+    .fail {{ color: var(--red); border-color: rgba(255, 92, 102, 0.38); background: rgba(255, 92, 102, 0.10); }}
+    .disabled {{ color: var(--gray); border-color: rgba(124, 135, 148, 0.35); background: rgba(124, 135, 148, 0.10); }}
+    .card-meta {{ color: var(--muted); font-size: 12px; margin-top: 6px; }}
+    .message {{ margin-top: 12px; color: var(--amber); font-size: 13px; }}
+    dl {{ display: grid; grid-template-columns: minmax(130px, 0.44fr) minmax(0, 1fr); gap: 8px 14px; margin: 14px 0 0; }}
+    dt {{ color: var(--muted); font-size: 12px; }}
+    dd {{ margin: 0; font-size: 13px; font-weight: 620; overflow-wrap: anywhere; }}
+    details {{ margin-top: 14px; padding: 14px 16px; }}
+    summary {{ cursor: pointer; color: var(--muted); font-weight: 750; }}
+    pre {{
+      overflow: auto;
+      padding: 14px;
+      background: #0c0f12;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #dce4ec;
+      font-size: 12px;
+      line-height: 1.5;
+    }}
+    @media (max-width: 820px) {{
+      header {{ flex-direction: column; }}
+      .actions {{ justify-content: flex-start; }}
+      .summary, .grid {{ grid-template-columns: 1fr; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>System Health</h1>
+        <div class="subtle">Probe symbol: <strong>{symbol}</strong> · Generated: {generated_at}</div>
+      </div>
+      <div class="actions">
+        <a class="button primary" href="">Refresh</a>
+        <a class="button" href="{json_href}">Raw JSON</a>
+      </div>
+    </header>
+
+    <section class="summary">
+      <div class="metric"><div class="label">Overall</div><div class="value"><span class="badge {status_class}">{escape(status)}</span></div></div>
+      <div class="metric"><div class="label">Market Window</div><div class="value">{escape(market_state)}</div><div class="subtle">{market_window}</div></div>
+      <div class="metric"><div class="label">Live TTL</div><div class="value">{escape(str(config.get("live_cache_ttl_seconds") or "-"))} sec</div></div>
+      <div class="metric"><div class="label">Poll Interval</div><div class="value">{escape(str(config.get("live_poll_interval_seconds") or "-"))} sec</div></div>
+    </section>
+
+    <section class="sources">{source_chips}</section>
+
+    <section class="grid">{cards}</section>
+
+    <details>
+      <summary>Raw health payload</summary>
+      <pre>{raw_json}</pre>
+    </details>
+  </main>
+</body>
+</html>"""
+
+
+def _source_chip_html(label: str, value: Any) -> str:
+    return (
+        f'<span class="chip">{escape(label)} '
+        f"<strong>{escape(str(value or '-'))}</strong></span>"
+    )
+
+
+def _system_health_card_html(name: str, item: dict[str, Any]) -> str:
+    status = str(item.get("status") or "ok").lower()
+    status_class = _health_status_class(status)
+    title = escape(name.replace("_", " ").title())
+    required = "Required" if item.get("required", True) else "Optional"
+    roles = item.get("active_for") or []
+    role_text = ", ".join(str(role).replace("_", " ") for role in roles) or "not active"
+    message = item.get("message")
+    if not message and isinstance(item.get("error"), dict):
+        message = item["error"].get("message")
+    rows = "\n".join(
+        f"<dt>{escape(_pretty_health_key(key))}</dt><dd>{_health_value_html(value)}</dd>"
+        for key, value in _health_display_rows(item)
+    )
+    message_html = f'<div class="message">{escape(str(message))}</div>' if message else ""
+    return f"""<article class="card">
+  <div class="card-head">
+    <div>
+      <h2>{title}</h2>
+      <div class="card-meta">{escape(required)} · {escape(role_text)}</div>
+    </div>
+    <span class="badge {status_class}">{escape(status)}</span>
+  </div>
+  {message_html}
+  <dl>{rows}</dl>
+</article>"""
+
+
+def _health_display_rows(item: dict[str, Any]) -> list[tuple[str, Any]]:
+    skip = {"status", "required", "active_for", "message"}
+    rows: list[tuple[str, Any]] = []
+    for key, value in item.items():
+        if key in skip:
+            continue
+        if isinstance(value, dict):
+            for nested_key, nested_value in value.items():
+                rows.append((f"{key}.{nested_key}", nested_value))
+        else:
+            rows.append((key, value))
+    return rows
+
+
+def _pretty_health_key(key: str) -> str:
+    return key.replace("_", " ").replace(".", " / ").title()
+
+
+def _health_value_html(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, list):
+        return escape(", ".join(str(item) for item in value) or "-")
+    if isinstance(value, dict):
+        return escape(json.dumps(value, default=str))
+    return escape(str(value))
+
+
+def _health_status_class(status: str) -> str:
+    if status in {"ok", "warn", "fail", "disabled"}:
+        return status
+    return "warn"
 
 
 def _broker_token_details(payload: dict[str, Any] | None) -> dict[str, Any]:
