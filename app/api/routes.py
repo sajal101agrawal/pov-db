@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import date, datetime
 from html import escape
 from typing import Any
@@ -17,12 +19,23 @@ from app.etl.pipeline import Pipeline
 from app.services.cache import CacheService
 from app.services.factory import build_bhavcopy_source, build_corporate_actions_source
 from app.services.live import (
+    IST,
+    _dhan_access_token,
+    _kite_access_token,
     fetch_and_store_live_quotes,
     fetch_and_store_live_snapshots,
     generate_kite_access_token,
+    in_market_window,
     kite_login_url_for_settings,
 )
+from app.sources.dhan import (
+    DhanOptionChainClient,
+    normalize_market_quotes as normalize_dhan_market_quotes,
+)
+from app.sources.kite import KiteConnectClient, quote_last_price as kite_quote_last_price
+from app.sources.nse_option_chain import NSEOptionChainClient
 from app.sources.rates import IndiaRiskFreeRateClient
+from app.sources.yahoo import YahooFinanceClient
 
 
 router = APIRouter()
@@ -51,6 +64,400 @@ async def cache(settings: Settings = Depends(get_settings)) -> CacheService:
 async def health(repo: MarketRepository = Depends(repository)) -> dict:
     latest = await repo.latest_trade_date()
     return {"ok": True, "latest_trade_date": latest}
+
+
+@router.get("/system-health")
+async def system_health(
+    symbol: str = Query(default="RELIANCE", description="Symbol to probe live providers with"),
+    settings: Settings = Depends(get_settings),
+    repo: MarketRepository = Depends(repository),
+    cache_service: CacheService = Depends(cache),
+) -> dict:
+    """On-demand browser-friendly health check for DB, Redis, and live data providers."""
+    probe_symbol = (symbol or "RELIANCE").strip().upper()
+    checks = dict(
+        await asyncio.gather(
+            _run_health_check("database", _check_database(repo)),
+            _run_health_check("redis", _check_redis(cache_service)),
+            _run_health_check(
+                "kite",
+                _check_kite(settings, repo, cache_service, probe_symbol),
+                required=bool(_provider_roles(settings, "kite")),
+            ),
+            _run_health_check(
+                "nse_option_chain",
+                _check_nse_option_chain(settings, probe_symbol),
+                required=bool(_provider_roles(settings, "nse")),
+            ),
+            _run_health_check(
+                "yahoo",
+                _check_yahoo(repo, settings, probe_symbol),
+                required=bool(_provider_roles(settings, "yahoo")),
+            ),
+            _run_health_check(
+                "dhan",
+                _check_dhan(settings, cache_service, probe_symbol),
+                required=bool(_provider_roles(settings, "dhan")),
+            ),
+            _run_health_check("live_state", _check_live_state(settings, repo, cache_service, probe_symbol)),
+        )
+    )
+    status = _overall_health_status(checks)
+    current_sources = _current_source_config(settings)
+    return {
+        "ok": status != "fail",
+        "status": status,
+        "generated_at": datetime.now(IST).isoformat(),
+        "symbol": probe_symbol,
+        "current_sources": current_sources,
+        "config": {
+            "app_env": settings.app_env,
+            **current_sources,
+            "live_symbols": settings.live_symbols,
+            "live_cache_ttl_seconds": settings.live_cache_ttl_seconds,
+            "live_poll_interval_seconds": settings.live_poll_interval_seconds,
+            "market_window_ist": {
+                "start": settings.live_market_start_ist,
+                "end": settings.live_market_end_ist,
+                "in_window_now": in_market_window(settings),
+            },
+        },
+        "checks": checks,
+    }
+
+
+async def _run_health_check(
+    name: str,
+    check: Any,
+    *,
+    required: bool = True,
+) -> tuple[str, dict[str, Any]]:
+    started = time.perf_counter()
+    try:
+        result = await check
+        payload = result if isinstance(result, dict) else {"status": "ok", "details": result}
+    except Exception as exc:  # noqa: BLE001 - health endpoint must report failures
+        payload = {"status": "fail", "error": _health_error(exc)}
+    payload.setdefault("status", "ok")
+    payload.setdefault("required", required)
+    payload["latency_ms"] = round((time.perf_counter() - started) * 1000, 2)
+    return name, payload
+
+
+def _overall_health_status(checks: dict[str, dict[str, Any]]) -> str:
+    has_warning = False
+    for item in checks.values():
+        status = str(item.get("status") or "ok")
+        if status == "fail":
+            if item.get("required", True):
+                return "fail"
+            has_warning = True
+        elif status == "warn":
+            has_warning = True
+    if has_warning:
+        return "warn"
+    return "ok"
+
+
+def _health_error(exc: Exception) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": type(exc).__name__,
+        "message": str(exc)[:500],
+    }
+    if isinstance(exc, httpx.HTTPStatusError):
+        payload["status_code"] = exc.response.status_code
+        payload["reason"] = exc.response.reason_phrase
+    return payload
+
+
+async def _check_database(repo: MarketRepository) -> dict[str, Any]:
+    db_now = await repo.pool.fetchval("SELECT NOW()")
+    latest_trade_date = await repo.latest_trade_date()
+    live_count = await repo.pool.fetchval("SELECT COUNT(*) FROM live_symbol_metrics")
+    latest_live_snapshot = await repo.pool.fetchval(
+        "SELECT MAX(snapshot_time) FROM live_symbol_metrics"
+    )
+    return {
+        "status": "ok",
+        "database_time": db_now.isoformat() if db_now else None,
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
+        "live_symbol_metrics_rows": int(live_count or 0),
+        "latest_live_snapshot": latest_live_snapshot.isoformat() if latest_live_snapshot else None,
+    }
+
+
+async def _check_redis(cache_service: CacheService) -> dict[str, Any]:
+    pong = await cache_service.redis.ping()
+    return {"status": "ok" if pong else "fail", "ping": bool(pong)}
+
+
+async def _check_kite(
+    settings: Settings,
+    repo: MarketRepository,
+    cache_service: CacheService,
+    symbol: str,
+) -> dict[str, Any]:
+    active_for = _provider_roles(settings, "kite")
+    if not settings.kite_api_key:
+        return {
+            "status": "fail" if active_for else "disabled",
+            "configured": False,
+            "active_for": active_for,
+        }
+    stored = await repo.broker_access_token("kite")
+    token_details = _broker_token_details(stored)
+    access_token = await _kite_access_token(settings, repo, cache_service.redis)
+    client = KiteConnectClient(
+        settings.kite_api_key,
+        access_token,
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+    )
+    instrument = f"NSE:{symbol}"
+    payload = await client.quote([instrument])
+    last_price = kite_quote_last_price(payload, instrument)
+    data = (payload.get("data") or {}).get(instrument) or {}
+    return {
+        "status": "ok" if last_price is not None else "warn",
+        "configured": True,
+        "active_for": active_for,
+        "api_key": _mask_value(settings.kite_api_key),
+        "stored_token": token_details,
+        "probe": {
+            "instrument": instrument,
+            "last_price": last_price,
+            "volume": data.get("volume"),
+            "oi": data.get("oi"),
+        },
+    }
+
+
+async def _check_nse_option_chain(settings: Settings, symbol: str) -> dict[str, Any]:
+    active_for = _provider_roles(settings, "nse")
+    client = NSEOptionChainClient(
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+        settings.live_option_summary_concurrency,
+        settings.live_option_summary_min_interval_seconds,
+    )
+    chain = await client.fetch_chain(symbol)
+    if not chain:
+        return {
+            "status": "fail",
+            "active_for": active_for,
+            "message": "NSE option chain returned no payload",
+        }
+    return {
+        "status": "ok" if chain.get("strike_count") else "warn",
+        "active_for": active_for,
+        "source": chain.get("source"),
+        "expiry": chain.get("expiry"),
+        "underlying_last_price": chain.get("underlying_last_price"),
+        "strike_count": chain.get("strike_count"),
+        "timestamp": chain.get("nse_option_chain_timestamp"),
+    }
+
+
+async def _check_yahoo(
+    repo: MarketRepository,
+    settings: Settings,
+    symbol: str,
+) -> dict[str, Any]:
+    active_for = _provider_roles(settings, "yahoo")
+    yahoo_symbols = await repo.yahoo_symbols_for([symbol])
+    client = YahooFinanceClient(
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+    )
+    rows = await client.fetch_live_quotes([symbol], yahoo_symbols)
+    quote = rows.get(symbol)
+    if not quote:
+        return {
+            "status": "fail",
+            "active_for": active_for,
+            "message": "Yahoo returned no live quote",
+        }
+    return {
+        "status": "ok",
+        "active_for": active_for,
+        "provider_symbol": quote.get("provider_symbol"),
+        "current_price": quote.get("current_price"),
+        "market_state": quote.get("market_state"),
+        "regular_market_time": quote.get("regular_market_time"),
+    }
+
+
+async def _check_dhan(
+    settings: Settings,
+    cache_service: CacheService,
+    symbol: str,
+) -> dict[str, Any]:
+    active_for = _provider_roles(settings, "dhan")
+    if not settings.dhan_client_id:
+        return {
+            "status": "fail" if active_for else "disabled",
+            "configured": False,
+            "active_for": active_for,
+        }
+    access_token = await _dhan_access_token(settings, cache_service.redis)
+    client = DhanOptionChainClient(
+        settings.dhan_client_id,
+        access_token,
+        settings.live_market_quote_min_interval_seconds,
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+    )
+    instrument_map = await client.instrument_map({symbol})
+    instrument = instrument_map.get(symbol)
+    if not instrument:
+        return {
+            "status": "warn",
+            "configured": True,
+            "active_for": active_for,
+            "message": "No Dhan instrument mapping",
+        }
+    segment = instrument["underlying_seg"]
+    security_id = instrument["underlying_scrip"]
+    raw = await client.market_quote({segment: [security_id]})
+    quotes = normalize_dhan_market_quotes({(segment, security_id): symbol}, raw)
+    quote = quotes.get(symbol)
+    if not quote:
+        return {
+            "status": "fail",
+            "configured": True,
+            "active_for": active_for,
+            "message": "Dhan returned no quote",
+        }
+    return {
+        "status": "ok",
+        "configured": True,
+        "active_for": active_for,
+        "instrument_source": instrument.get("source"),
+        "segment": segment,
+        "security_id": security_id,
+        "current_price": quote.get("current_price"),
+    }
+
+
+async def _check_live_state(
+    settings: Settings,
+    repo: MarketRepository,
+    cache_service: CacheService,
+    symbol: str,
+) -> dict[str, Any]:
+    cached = await cache_service.get_live(symbol)
+    stored = (await repo.latest_live_metrics([symbol])).get(symbol)
+    live = cached or stored
+    redis_ttl = await cache_service.redis.ttl(f"live:{symbol.upper()}")
+    if not live:
+        return {"status": "warn", "message": "No live payload in Redis or database"}
+    age_seconds = _snapshot_age_seconds(live.get("snapshot_time"))
+    stale_after_seconds = max(
+        int(settings.live_cache_ttl_seconds),
+        int(settings.live_poll_interval_seconds) * 2,
+    )
+    off_market_stale_after_seconds = 24 * 60 * 60
+    is_market_open = in_market_window(settings)
+    status = "ok"
+    message = None
+    if age_seconds is None:
+        status = "warn"
+        message = "Live payload snapshot_time is missing or invalid"
+    elif is_market_open and age_seconds > stale_after_seconds:
+        status = "warn"
+        message = "Live payload is stale for the configured market window"
+    elif not is_market_open and age_seconds > off_market_stale_after_seconds:
+        status = "warn"
+        message = "Live payload is older than 24 hours"
+    return {
+        "status": status,
+        "message": message,
+        "source": "redis" if cached else "database",
+        "redis_key_present": bool(cached),
+        "redis_ttl_seconds": redis_ttl,
+        "database_row_present": bool(stored),
+        "snapshot_time": live.get("snapshot_time"),
+        "age_seconds": age_seconds,
+        "stale_after_seconds": stale_after_seconds,
+        "off_market_stale_after_seconds": off_market_stale_after_seconds,
+        "market_window_open_now": is_market_open,
+        "quote_provider": live.get("quote_provider") or live.get("provider"),
+        "option_provider": live.get("live_option_provider"),
+        "forward_analytics_source": live.get("forward_analytics_source"),
+        "current_price": live.get("current_price"),
+        "iv_30": live.get("iv_30"),
+        "dte_30": live.get("dte_30"),
+        "dte_60": live.get("dte_60"),
+    }
+
+
+def _current_source_config(settings: Settings) -> dict[str, str]:
+    return {
+        "live_quote_provider": settings.live_quote_provider.lower().strip(),
+        "live_option_summary_provider": settings.live_option_summary_provider.lower().strip(),
+        "live_option_chain_provider": settings.live_option_chain_provider.lower().strip(),
+    }
+
+
+def _provider_roles(settings: Settings, provider: str) -> list[str]:
+    provider = provider.lower().strip()
+    sources = _current_source_config(settings)
+    roles = []
+    if sources["live_quote_provider"] == provider:
+        roles.append("quote")
+    if sources["live_option_summary_provider"] == provider:
+        roles.append("option_summary")
+    if sources["live_option_chain_provider"] == provider:
+        roles.append("option_chain")
+    return roles
+
+
+def _snapshot_age_seconds(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=IST)
+    return round((datetime.now(IST) - parsed.astimezone(IST)).total_seconds(), 2)
+
+
+def _broker_token_details(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not payload:
+        return {"present": False}
+    expires_at = payload.get("expires_at")
+    usable = False
+    if expires_at:
+        try:
+            expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=IST)
+            usable = expiry > datetime.now(expiry.tzinfo)
+        except ValueError:
+            usable = False
+    return {
+        "present": True,
+        "expires_at": expires_at,
+        "updated_at": payload.get("updated_at"),
+        "usable_now": usable,
+    }
+
+
+def _mask_value(value: str | None, keep: int = 4) -> str | None:
+    if not value:
+        return None
+    if len(value) <= keep * 2:
+        return "***"
+    return f"{value[:keep]}...{value[-keep:]}"
 
 
 @router.get("/admin/error-logs")
