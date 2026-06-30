@@ -558,12 +558,11 @@ async def _fetch_nse_live_option_summaries(
     symbols: list[str],
     baseline: dict[str, dict],
 ) -> dict[str, dict]:
+    trade_date = datetime.now(IST).date()
     expiry_hints = {
-        symbol: {
-            "expiry_30d": baseline.get(symbol, {}).get("expiry_30d"),
-            "expiry_60d": baseline.get(symbol, {}).get("expiry_60d"),
-            "expiry_90d": baseline.get(symbol, {}).get("expiry_90d"),
-        }
+        symbol: _expiry_hint_from_targets(
+            _future_expiry_targets_from_baseline(baseline.get(symbol, {}), trade_date)
+        )
         for symbol in symbols
     }
     client = NSEOptionChainClient(
@@ -604,21 +603,13 @@ async def _fetch_dhan_live_option_summaries(
         instrument = instrument_map.get(symbol)
         if not instrument:
             continue
-        targets = _dhan_expiry_targets_from_baseline(baseline.get(symbol, {}))
-        if not targets:
+        targets = _future_expiry_targets_from_baseline(baseline.get(symbol, {}), now)
+        if len(targets) < 3:
             expiries = await client.expiry_list(
                 instrument["underlying_scrip"],
                 instrument["underlying_seg"],
             )
-            targets = [
-                expiry
-                for expiry in (
-                    _closest_expiry(expiries, now, 30),
-                    _closest_expiry(expiries, now, 60),
-                    _closest_expiry(expiries, now, 90),
-                )
-                if expiry is not None
-            ]
+            targets = _merge_expiry_targets(targets, _expiry_targets_from_expiries(expiries, now))
         seen: set[date] = set()
         for expiry in targets:
             if expiry in seen:
@@ -696,9 +687,9 @@ async def _fetch_kite_live_option_summaries(
         if spot is None:
             continue
         rows = _kite_option_rows(instruments, symbol)
-        targets = _dhan_expiry_targets_from_baseline(baseline.get(symbol, {}))
-        if not targets:
-            targets = _kite_expiry_targets(rows, now)
+        targets = _future_expiry_targets_from_baseline(baseline.get(symbol, {}), now)
+        if len(targets) < 3:
+            targets = _merge_expiry_targets(targets, _kite_expiry_targets(rows, now))
         preferred_strike = None
         for expiry in targets:
             request = _kite_atm_option_request(symbol, spot, rows, expiry, preferred_strike)
@@ -1025,17 +1016,10 @@ def _kite_expiry_targets(rows: list[dict[str, Any]], trade_date: date) -> list[d
             expiry
             for row in rows
             if (expiry := _coerce_date(row.get("expiry"))) is not None
-            and expiry >= trade_date
+            and expiry > trade_date
         }
     )
-    targets = []
-    seen = set()
-    for target_dte in (30, 60, 90):
-        expiry = _closest_expiry(expiries, trade_date, target_dte)
-        if expiry is not None and expiry not in seen:
-            targets.append(expiry)
-            seen.add(expiry)
-    return targets
+    return _expiry_targets_from_expiries(expiries, trade_date)
 
 
 def _kite_atm_option_request(
@@ -1261,13 +1245,53 @@ def _closest_expiry(expiries, trade_date, target_dte: int):
     return min(future, key=lambda expiry: abs((expiry - trade_date).days - target_dte))
 
 
-def _dhan_expiry_targets_from_baseline(base: dict[str, Any]) -> list[date]:
+def _future_expiry_targets_from_baseline(base: dict[str, Any], trade_date: date) -> list[date]:
     targets = []
     for key in ("expiry_30d", "expiry_60d", "expiry_90d"):
         expiry = _coerce_date(base.get(key))
-        if expiry:
+        if expiry and expiry > trade_date:
             targets.append(expiry)
+    return _merge_expiry_targets(targets)
+
+
+def _expiry_targets_from_expiries(expiries, trade_date: date) -> list[date]:
+    future = sorted({expiry for expiry in expiries if expiry > trade_date})
+    targets = []
+    seen = set()
+    for target_dte in (30, 60, 90):
+        expiry = _closest_expiry(future, trade_date, target_dte)
+        if expiry is not None and expiry not in seen:
+            targets.append(expiry)
+            seen.add(expiry)
     return targets
+
+
+def _merge_expiry_targets(
+    primary: list[date],
+    secondary: list[date] | None = None,
+    limit: int = 3,
+) -> list[date]:
+    merged = []
+    seen = set()
+    for expiry in [*(primary or []), *((secondary or []))]:
+        if expiry in seen:
+            continue
+        seen.add(expiry)
+        merged.append(expiry)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _expiry_hint_from_targets(targets: list[date]) -> dict[str, date | None] | None:
+    if not targets:
+        return None
+    values = [*targets[:3], None, None, None]
+    return {
+        "expiry_30d": values[0],
+        "expiry_60d": values[1],
+        "expiry_90d": values[2],
+    }
 
 
 async def _instrument_map(client: DhanOptionChainClient, symbols: list[str]) -> dict[str, dict]:

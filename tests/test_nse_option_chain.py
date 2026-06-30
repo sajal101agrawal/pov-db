@@ -172,6 +172,40 @@ def test_live_forward_metrics_bucket_expiries_as_30_60_90() -> None:
     assert math.isclose(metrics["iv_slope_3060"], (metrics["iv_60"] - metrics["iv_30"]) / (33 - 5))
 
 
+def test_live_forward_metrics_skip_expiry_day_term() -> None:
+    summary = {
+        "live_atm_iv_source": "kite:quote:calculated-iv",
+        "live_iv_terms": [
+            {
+                "expiry_date": date(2026, 6, 30),
+                "call_iv": 0.50,
+                "put_iv": 0.54,
+            },
+            {
+                "expiry_date": date(2026, 7, 28),
+                "call_iv": 0.23,
+                "put_iv": 0.25,
+            },
+            {
+                "expiry_date": date(2026, 8, 25),
+                "call_iv": 0.21,
+                "put_iv": 0.23,
+            },
+        ],
+    }
+
+    metrics = _live_forward_metrics(summary, date(2026, 6, 30))
+
+    assert metrics["expiry_30d"] == date(2026, 7, 28)
+    assert metrics["expiry_60d"] == date(2026, 8, 25)
+    assert metrics["dte_30"] == 28
+    assert metrics["dte_60"] == 56
+    assert math.isclose(metrics["iv_30"], 0.24)
+    assert math.isclose(metrics["iv_60"], 0.22)
+    assert metrics["fwdv_3060"] is not None
+    assert metrics["fwdfct_3060"] is not None
+
+
 def test_live_forward_metrics_require_both_sides_for_average_factor() -> None:
     summary = {
         "live_iv_terms": [

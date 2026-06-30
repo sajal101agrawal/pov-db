@@ -150,6 +150,45 @@ def test_kite_expiry_targets_are_distinct_when_nearest_targets_overlap() -> None
     assert targets == [date(2026, 7, 28), date(2026, 8, 25)]
 
 
+def test_kite_expiry_targets_skip_expiry_day_contracts() -> None:
+    trade_date = date(2026, 6, 30)
+    rows = [
+        {"expiry": date(2026, 6, 30)},
+        {"expiry": date(2026, 7, 28)},
+        {"expiry": date(2026, 8, 25)},
+        {"expiry": date(2026, 9, 29)},
+    ]
+
+    targets = live_service._kite_expiry_targets(rows, trade_date)
+
+    assert targets == [
+        date(2026, 7, 28),
+        date(2026, 8, 25),
+        date(2026, 9, 29),
+    ]
+
+
+def test_future_expiry_targets_from_baseline_skip_expiry_day_and_backfill() -> None:
+    trade_date = date(2026, 6, 30)
+    base = {
+        "expiry_30d": date(2026, 6, 30),
+        "expiry_60d": date(2026, 7, 28),
+        "expiry_90d": date(2026, 8, 25),
+    }
+    fallback = [date(2026, 7, 28), date(2026, 8, 25), date(2026, 9, 29)]
+
+    targets = live_service._merge_expiry_targets(
+        live_service._future_expiry_targets_from_baseline(base, trade_date),
+        fallback,
+    )
+
+    assert targets == [
+        date(2026, 7, 28),
+        date(2026, 8, 25),
+        date(2026, 9, 29),
+    ]
+
+
 def test_kite_option_request_uses_preferred_same_strike_for_far_expiry() -> None:
     expiry = date(2026, 7, 28)
     rows = [
