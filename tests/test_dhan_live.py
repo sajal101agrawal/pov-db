@@ -71,6 +71,9 @@ def test_dhan_expiry_summaries_preserve_all_live_iv_terms() -> None:
         "live_option_expiry": "2026-06-25",
         "live_option_expiry_date": date(2026, 6, 25),
         "live_atm_strike": 1000,
+        "live_atm_preferred_strike": 1000,
+        "live_atm_same_strike_used": True,
+        "live_atm_strike_source": "preferred_same_strike",
         "live_atm_iv": 0.20,
         "live_atm_call_iv": 0.21,
         "live_atm_put_iv": 0.19,
@@ -90,6 +93,9 @@ def test_dhan_expiry_summaries_preserve_all_live_iv_terms() -> None:
     assert combined["live_iv_term_count"] == 2
     assert [item["expiry"] for item in combined["live_iv_terms"]] == ["2026-06-25", "2026-07-30"]
     assert [item["atm_iv"] for item in combined["live_iv_terms"]] == [0.20, 0.25]
+    assert combined["live_iv_terms"][0]["preferred_strike"] == 1000
+    assert combined["live_iv_terms"][0]["same_strike_used"] is True
+    assert combined["live_iv_terms"][0]["strike_source"] == "preferred_same_strike"
 
 
 def test_live_forward_metrics_use_dhan_source_markers() -> None:

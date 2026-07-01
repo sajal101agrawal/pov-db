@@ -25,7 +25,7 @@ def compute_forward_factor_metrics(
         {
             row["expiry_date"]
             for row in chain
-            if row.get("expiry_date") is not None and row["expiry_date"] >= trade_date
+            if row.get("expiry_date") is not None and row["expiry_date"] > trade_date
         }
     )
     expiry_buckets = monthly_expiry_buckets(expiries)

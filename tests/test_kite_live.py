@@ -206,6 +206,26 @@ def test_kite_option_request_uses_preferred_same_strike_for_far_expiry() -> None
     assert request["pe_key"] == "NFO:ABC100PE"
 
 
+def test_kite_option_request_falls_back_to_closest_far_strike() -> None:
+    expiry = date(2026, 8, 25)
+    rows = [
+        _instrument(expiry, 1020.0, "CE"),
+        _instrument(expiry, 1020.0, "PE"),
+        _instrument(expiry, 1040.0, "CE"),
+        _instrument(expiry, 1040.0, "PE"),
+    ]
+
+    request = live_service._kite_atm_option_request("ABC", 1029.0, rows, expiry, 1030.0)
+
+    assert request is not None
+    assert request["strike"] == 1020.0
+    assert request["preferred_strike"] == 1030.0
+    assert request["same_strike_used"] is False
+    assert request["strike_source"] == "closest_to_preferred_strike"
+    assert request["ce_key"] == "NFO:ABC1020CE"
+    assert request["pe_key"] == "NFO:ABC1020PE"
+
+
 def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
     now = datetime(2026, 6, 25, 10, 45, tzinfo=live_service.IST)
     base = {

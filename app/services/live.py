@@ -1043,10 +1043,19 @@ def _kite_atm_option_request(
     )
     if not strikes:
         return None
+    strike_source = "spot_atm"
+    same_strike_used = True
     if preferred_strike is not None:
-        if preferred_strike not in strikes:
-            return None
-        atm_strike = preferred_strike
+        if preferred_strike in strikes:
+            atm_strike = preferred_strike
+            strike_source = "preferred_same_strike"
+        else:
+            atm_strike = min(
+                strikes,
+                key=lambda strike: (abs(strike - preferred_strike), abs(strike - spot), strike),
+            )
+            strike_source = "closest_to_preferred_strike"
+            same_strike_used = False
     else:
         atm_strike = min(strikes, key=lambda strike: (abs(strike - spot), strike))
     ce = _kite_option_row(expiry_rows, atm_strike, "CE")
@@ -1058,6 +1067,9 @@ def _kite_atm_option_request(
         "spot": spot,
         "expiry": expiry,
         "strike": atm_strike,
+        "preferred_strike": preferred_strike,
+        "same_strike_used": same_strike_used,
+        "strike_source": strike_source,
         "strike_count": len(strikes),
         "ce_row": ce,
         "pe_row": pe,
@@ -1119,6 +1131,9 @@ def _kite_option_summary_from_quotes(
         "live_option_strike_count": request["strike_count"],
         "live_option_underlying": spot,
         "live_atm_strike": strike,
+        "live_atm_preferred_strike": request.get("preferred_strike"),
+        "live_atm_same_strike_used": request.get("same_strike_used"),
+        "live_atm_strike_source": request.get("strike_source"),
         "live_atm_iv": atm_iv,
         "live_atm_call_iv": call_iv,
         "live_atm_put_iv": put_iv,

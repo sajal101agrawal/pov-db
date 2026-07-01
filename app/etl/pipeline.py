@@ -216,20 +216,17 @@ class Pipeline:
         chain: list[dict[str, Any]],
         atm_strike: float,
     ) -> dict[str, Any]:
-        expiries = sorted({row["expiry_date"] for row in chain if row["expiry_date"] >= trade_date})
-        expiry_buckets = monthly_expiry_buckets(expiries)
-        expiry_30 = expiry_buckets[0] if len(expiry_buckets) >= 1 else None
-        expiry_60 = expiry_buckets[1] if len(expiry_buckets) >= 2 else None
-        expiry_90 = expiry_buckets[2] if len(expiry_buckets) >= 3 else None
-
         forward_metrics = compute_forward_factor_metrics(chain, trade_date, spot_close)
         iv30 = forward_metrics["iv_30"]
         iv60 = forward_metrics["iv_60"]
         iv90 = forward_metrics["iv_90"]
+        expiry_30 = forward_metrics["expiry_30d"]
+        expiry_60 = forward_metrics["expiry_60d"]
+        expiry_90 = forward_metrics["expiry_90d"]
 
-        dte30 = (expiry_30 - trade_date).days if expiry_30 else None
-        dte60 = (expiry_60 - trade_date).days if expiry_60 else None
-        dte90 = (expiry_90 - trade_date).days if expiry_90 else None
+        dte30 = forward_metrics["dte_30"]
+        dte60 = forward_metrics["dte_60"]
+        dte90 = forward_metrics["dte_90"]
         price_metrics = calculate_price_series_metrics(ohlc, corporate_actions, trade_date)
         rv10 = price_metrics["rv_10"]
         rv20 = price_metrics["rv_20"]
@@ -237,6 +234,7 @@ class Pipeline:
         rv60 = price_metrics["rv_60"]
         rv90 = price_metrics["rv_90"]
         fwdv = forward_metrics["fwdv_3060"]
+        expiries = sorted({row["expiry_date"] for row in chain if row["expiry_date"] > trade_date})
         skew_expiry = _expiry_closest_to_target(expiries, trade_date, 30)
         skew_chain = [row for row in chain if row["expiry_date"] == skew_expiry]
         skew20 = compute_skew(skew_chain, 0.20)

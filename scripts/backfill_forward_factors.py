@@ -36,6 +36,12 @@ FORWARD_FIELDS = (
     "nearest_pe_iv",
     "nearest_ce_ltp",
     "nearest_pe_ltp",
+    "expiry_30d",
+    "expiry_60d",
+    "expiry_90d",
+    "dte_30",
+    "dte_60",
+    "dte_90",
     "fwdv_3060",
     "fwdfct_3060",
     "call_fwdfct_3060",
@@ -44,6 +50,9 @@ FORWARD_FIELDS = (
     "iv_slope_3060",
     "iv30_fev30_ratio",
 )
+
+DATE_FORWARD_FIELDS = {"expiry_30d", "expiry_60d", "expiry_90d"}
+INT_FORWARD_FIELDS = {"dte_30", "dte_60", "dte_90"}
 
 
 async def main() -> None:
@@ -144,7 +153,7 @@ async def main() -> None:
                 for row in await pool.fetch(
                     f"""
                     SELECT sdm.symbol, sdm.trade_date, eh.close::float AS spot_close,
-                           {', '.join(f'sdm.{field}::float' for field in FORWARD_FIELDS)}
+                           {', '.join(_metric_select_expression(field) for field in FORWARD_FIELDS)}
                     FROM symbol_daily_metrics sdm
                     JOIN equity_historical eh
                       ON eh.symbol = sdm.symbol AND eh.trade_date = sdm.trade_date
@@ -293,7 +302,7 @@ async def _atm_option_rows(pool: Any, symbol: str, start: date, end: date) -> li
             JOIN options_historical oh
               ON oh.symbol = $1
              AND oh.trade_date = md.trade_date
-             AND oh.expiry_date >= md.trade_date
+             AND oh.expiry_date > md.trade_date
             GROUP BY md.trade_date, date_trunc('month', oh.expiry_date)
         ),
         selected_expiries AS (
@@ -339,11 +348,27 @@ async def _atm_option_rows(pool: Any, symbol: str, start: date, end: date) -> li
     )
 
 
-def audit_values(values: dict[str, Any]) -> dict[str, float | None]:
+def _metric_select_expression(field: str) -> str:
+    if field in DATE_FORWARD_FIELDS or field in INT_FORWARD_FIELDS:
+        return f"sdm.{field}"
+    return f"sdm.{field}::float"
+
+
+def audit_values(values: dict[str, Any]) -> dict[str, Any]:
     return {
-        field: round(float(values[field]), 8) if values.get(field) is not None else None
+        field: _audit_value(values.get(field))
         for field in FORWARD_FIELDS
     }
+
+
+def _audit_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, int):
+        return value
+    return round(float(value), 8)
 
 
 def materially_changed(old: dict[str, Any], new: dict[str, Any]) -> bool:
