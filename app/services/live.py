@@ -590,7 +590,7 @@ def _incomplete_option_summary_symbols(symbols: list[str], summaries: dict[str, 
     return [
         symbol
         for symbol in symbols
-        if _option_summary_term_count(summaries.get(symbol.upper())) < 2
+        if not _option_summary_has_two_sided_forward_terms(summaries.get(symbol.upper()))
     ]
 
 
@@ -601,20 +601,56 @@ def _prefer_more_complete_option_summaries(
     merged = dict(primary)
     for symbol, fallback_summary in fallback.items():
         current = merged.get(symbol)
-        if _option_summary_term_count(fallback_summary) > _option_summary_term_count(current):
+        if _option_summary_forward_completeness_score(
+            fallback_summary
+        ) > _option_summary_forward_completeness_score(current):
             merged[symbol] = fallback_summary
     return merged
 
 
-def _option_summary_term_count(summary: dict[str, Any] | None) -> int:
+def _option_summary_has_two_sided_forward_terms(summary: dict[str, Any] | None) -> bool:
+    score = _option_summary_forward_completeness_score(summary)
+    return score[0] >= 2
+
+
+def _option_summary_forward_completeness_score(summary: dict[str, Any] | None) -> tuple[int, int, int]:
+    terms = _option_summary_terms(summary)
+    first_two = terms[:2]
+    two_sided_terms = sum(
+        1
+        for term in first_two
+        if _positive_float(term.get("call_iv")) is not None
+        and _positive_float(term.get("put_iv")) is not None
+    )
+    side_values = sum(
+        1
+        for term in first_two
+        for key in ("call_iv", "put_iv")
+        if _positive_float(term.get(key)) is not None
+    )
+    return (two_sided_terms, side_values, len(terms))
+
+
+def _option_summary_terms(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not summary:
-        return 0
+        return []
     terms = summary.get("live_iv_terms")
     if isinstance(terms, list):
-        return len(terms)
-    if summary.get("live_atm_iv") is not None or summary.get("live_option_volume") is not None:
-        return 1
-    return 0
+        return [term for term in terms if isinstance(term, dict)]
+    if (
+        summary.get("live_atm_iv") is not None
+        or summary.get("live_atm_call_iv") is not None
+        or summary.get("live_atm_put_iv") is not None
+        or summary.get("live_option_volume") is not None
+    ):
+        return [
+            {
+                "atm_iv": summary.get("live_atm_iv"),
+                "call_iv": summary.get("live_atm_call_iv"),
+                "put_iv": summary.get("live_atm_put_iv"),
+            }
+        ]
+    return []
 
 
 async def _fetch_dhan_live_option_summaries(

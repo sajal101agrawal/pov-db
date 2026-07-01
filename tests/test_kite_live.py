@@ -381,13 +381,32 @@ def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monk
         return {
             "ABC": {
                 "provider": "kite",
-                "live_iv_terms": [{"expiry_date": date(2026, 7, 28), "atm_iv": 0.20}],
+                "live_iv_terms": [
+                    {
+                        "expiry_date": date(2026, 7, 28),
+                        "call_iv": 0.20,
+                        "put_iv": 0.22,
+                    },
+                    {
+                        "expiry_date": date(2026, 8, 25),
+                        "call_iv": 0.21,
+                        "put_iv": None,
+                    },
+                ],
             },
             "OK": {
                 "provider": "kite",
                 "live_iv_terms": [
-                    {"expiry_date": date(2026, 7, 28), "atm_iv": 0.20},
-                    {"expiry_date": date(2026, 8, 25), "atm_iv": 0.21},
+                    {
+                        "expiry_date": date(2026, 7, 28),
+                        "call_iv": 0.20,
+                        "put_iv": 0.22,
+                    },
+                    {
+                        "expiry_date": date(2026, 8, 25),
+                        "call_iv": 0.21,
+                        "put_iv": 0.23,
+                    },
                 ],
             },
         }
@@ -404,8 +423,16 @@ def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monk
             "ABC": {
                 "provider": "nse",
                 "live_iv_terms": [
-                    {"expiry_date": date(2026, 7, 28), "atm_iv": 0.22},
-                    {"expiry_date": date(2026, 8, 25), "atm_iv": 0.23},
+                    {
+                        "expiry_date": date(2026, 7, 28),
+                        "call_iv": 0.22,
+                        "put_iv": 0.24,
+                    },
+                    {
+                        "expiry_date": date(2026, 8, 25),
+                        "call_iv": 0.23,
+                        "put_iv": 0.25,
+                    },
                 ],
             }
         }
