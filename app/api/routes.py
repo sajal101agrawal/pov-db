@@ -1685,10 +1685,15 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         if key in live:
             current[key] = live[key]
     _refresh_current_forward_factor_percentiles(history, current)
+    snapshot_time = live.get("snapshot_time")
+    trade_date = _date_from_snapshot(snapshot_time)
+    if trade_date is None:
+        trade_date = datetime.now().date().isoformat()
+    current["trade_date"] = trade_date
     current["is_live"] = True
-    current["snapshot_time"] = live.get("snapshot_time")
+    current["snapshot_time"] = snapshot_time
 
-    if history:
+    if history and _date_to_string(history[-1].get("trade_date")) == trade_date:
         history[-1] = {**history[-1], **current}
     else:
         history.append(current)

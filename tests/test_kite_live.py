@@ -249,6 +249,7 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
 
     payload = live_service._live_quote_payload(base, quote, option_summary, now)
 
+    assert payload["trade_date"] == "2026-06-25"
     assert payload["expiry_90d"] is None
     assert payload["dte_90"] is None
     assert payload["iv_90"] is None
@@ -367,6 +368,64 @@ def test_kite_option_summary_provider_falls_back_to_nse_on_failure(monkeypatch) 
     )
 
     assert result == {"ABC": {"provider": "nse", "live_option_volume": 20}}
+
+
+def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monkeypatch) -> None:
+    async def kite_partial(
+        settings: Settings,
+        repo: object,
+        redis: object,
+        symbols: list[str],
+        baseline: dict,
+    ) -> dict:
+        return {
+            "ABC": {
+                "provider": "kite",
+                "live_iv_terms": [{"expiry_date": date(2026, 7, 28), "atm_iv": 0.20}],
+            },
+            "OK": {
+                "provider": "kite",
+                "live_iv_terms": [
+                    {"expiry_date": date(2026, 7, 28), "atm_iv": 0.20},
+                    {"expiry_date": date(2026, 8, 25), "atm_iv": 0.21},
+                ],
+            },
+        }
+
+    async def nse_success(
+        settings: Settings,
+        symbols: list[str],
+        baseline: dict,
+        use_baseline_hints: bool = True,
+    ) -> dict:
+        assert symbols == ["ABC"]
+        assert use_baseline_hints is False
+        return {
+            "ABC": {
+                "provider": "nse",
+                "live_iv_terms": [
+                    {"expiry_date": date(2026, 7, 28), "atm_iv": 0.22},
+                    {"expiry_date": date(2026, 8, 25), "atm_iv": 0.23},
+                ],
+            }
+        }
+
+    monkeypatch.setattr(live_service, "_fetch_kite_live_option_summaries", kite_partial)
+    monkeypatch.setattr(live_service, "_fetch_nse_live_option_summaries", nse_success)
+
+    result = asyncio.run(
+        live_service._fetch_live_option_summaries(
+            Settings(live_option_summary_provider="kite"),
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            ["ABC", "OK"],
+            {"ABC": {"expiry_30d": date(2026, 7, 28)}},
+        )
+    )
+
+    assert result["ABC"]["provider"] == "nse"
+    assert len(result["ABC"]["live_iv_terms"]) == 2
+    assert result["OK"]["provider"] == "kite"
 
 
 def test_kite_quote_provider_falls_back_to_yahoo_on_failure(monkeypatch) -> None:

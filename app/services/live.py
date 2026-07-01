@@ -541,10 +541,15 @@ async def _fetch_live_option_summaries(
             )
             return await _fetch_nse_live_option_summaries(settings, symbols, baseline)
 
-        missing = [symbol for symbol in symbols if symbol not in kite_summaries]
-        if missing:
-            nse_summaries = await _fetch_nse_live_option_summaries(settings, missing, baseline)
-            return {**nse_summaries, **kite_summaries}
+        incomplete = _incomplete_option_summary_symbols(symbols, kite_summaries)
+        if incomplete:
+            nse_summaries = await _fetch_nse_live_option_summaries(
+                settings,
+                incomplete,
+                baseline,
+                use_baseline_hints=False,
+            )
+            return _prefer_more_complete_option_summaries(kite_summaries, nse_summaries)
         return kite_summaries
     if provider != "nse":
         raise ValueError(
@@ -557,14 +562,17 @@ async def _fetch_nse_live_option_summaries(
     settings: Settings,
     symbols: list[str],
     baseline: dict[str, dict],
+    use_baseline_hints: bool = True,
 ) -> dict[str, dict]:
     trade_date = datetime.now(IST).date()
-    expiry_hints = {
-        symbol: _expiry_hint_from_targets(
-            _future_expiry_targets_from_baseline(baseline.get(symbol, {}), trade_date)
-        )
-        for symbol in symbols
-    }
+    expiry_hints = {}
+    if use_baseline_hints:
+        expiry_hints = {
+            symbol: _expiry_hint_from_targets(
+                _future_expiry_targets_from_baseline(baseline.get(symbol, {}), trade_date)
+            )
+            for symbol in symbols
+        }
     client = NSEOptionChainClient(
         settings.source_retry_attempts,
         settings.source_retry_base_delay_seconds,
@@ -576,6 +584,37 @@ async def _fetch_nse_live_option_summaries(
         return await client.fetch_summaries(symbols, expiry_hints)
     except Exception:
         return {}
+
+
+def _incomplete_option_summary_symbols(symbols: list[str], summaries: dict[str, dict]) -> list[str]:
+    return [
+        symbol
+        for symbol in symbols
+        if _option_summary_term_count(summaries.get(symbol.upper())) < 2
+    ]
+
+
+def _prefer_more_complete_option_summaries(
+    primary: dict[str, dict],
+    fallback: dict[str, dict],
+) -> dict[str, dict]:
+    merged = dict(primary)
+    for symbol, fallback_summary in fallback.items():
+        current = merged.get(symbol)
+        if _option_summary_term_count(fallback_summary) > _option_summary_term_count(current):
+            merged[symbol] = fallback_summary
+    return merged
+
+
+def _option_summary_term_count(summary: dict[str, Any] | None) -> int:
+    if not summary:
+        return 0
+    terms = summary.get("live_iv_terms")
+    if isinstance(terms, list):
+        return len(terms)
+    if summary.get("live_atm_iv") is not None or summary.get("live_option_volume") is not None:
+        return 1
+    return 0
 
 
 async def _fetch_dhan_live_option_summaries(
@@ -1334,6 +1373,7 @@ def _live_quote_payload(
     payload = {
         **base,
         **quote,
+        "trade_date": now.date().isoformat(),
         "snapshot_time": now.isoformat(),
         "quote_type": "basic",
         "quote_provider": quote.get("provider"),
