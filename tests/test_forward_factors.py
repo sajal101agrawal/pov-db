@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import importlib.util
 import math
+from pathlib import Path
 
 from app.services.forward_factors import compute_forward_factor_metrics
-from scripts.backfill_forward_factors import audit_values, _metric_select_expression
+
+
+_BACKFILL_SPEC = importlib.util.spec_from_file_location(
+    "backfill_forward_factors",
+    Path(__file__).resolve().parents[1] / "scripts" / "backfill_forward_factors.py",
+)
+assert _BACKFILL_SPEC is not None and _BACKFILL_SPEC.loader is not None
+_BACKFILL_MODULE = importlib.util.module_from_spec(_BACKFILL_SPEC)
+_BACKFILL_SPEC.loader.exec_module(_BACKFILL_MODULE)
+audit_values = _BACKFILL_MODULE.audit_values
+_metric_select_expression = _BACKFILL_MODULE._metric_select_expression
 
 
 def test_forward_factors_use_separate_atm_call_and_put_iv_term_structures() -> None:
