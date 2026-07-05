@@ -991,6 +991,10 @@ FILTERABLE_NUMERIC = {
     "iv_30_percentile":  "sdm.iv_30_percentile",
     "iv_60_percentile":  "sdm.iv_60_percentile",
     "iv_90_percentile":  "sdm.iv_90_percentile",
+    "call_iv_30_percentile": "sdm.call_iv_30_percentile",
+    "call_iv_60_percentile": "sdm.call_iv_60_percentile",
+    "put_iv_30_percentile": "sdm.put_iv_30_percentile",
+    "put_iv_60_percentile": "sdm.put_iv_60_percentile",
     "fwdv_3060":         "sdm.fwdv_3060",
     "fwdfct_3060":       "sdm.fwdfct_3060",
     "call_fwdfct_3060":  "sdm.call_fwdfct_3060",
@@ -998,6 +1002,10 @@ FILTERABLE_NUMERIC = {
     "max_fwdfct_3060":   "GREATEST(sdm.call_fwdfct_3060, sdm.put_fwdfct_3060)",
     "call_fwdfct_3060_percentile": "sdm.call_fwdfct_3060_percentile",
     "put_fwdfct_3060_percentile": "sdm.put_fwdfct_3060_percentile",
+    "call_slope_3060": "sdm.call_slope_3060",
+    "put_slope_3060": "sdm.put_slope_3060",
+    "call_slope_3060_percentile": "sdm.call_slope_3060_percentile",
+    "put_slope_3060_percentile": "sdm.put_slope_3060_percentile",
     "iv_slope_3060":     "sdm.iv_slope_3060",
     "rv_10":             "CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_10 END",
     "rv_20":             "CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_20 END",
@@ -1042,6 +1050,14 @@ LIVE_OVERLAY_NUMERIC_FIELDS = {
     "max_fwdfct_3060",
     "call_fwdfct_3060_percentile",
     "put_fwdfct_3060_percentile",
+    "call_iv_30_percentile",
+    "call_iv_60_percentile",
+    "put_iv_30_percentile",
+    "put_iv_60_percentile",
+    "call_slope_3060",
+    "put_slope_3060",
+    "call_slope_3060_percentile",
+    "put_slope_3060_percentile",
     "iv_30",
     "iv_60",
     "iv_90",
@@ -1589,25 +1605,19 @@ async def symbol_term_structure(
                        expiry_30d, expiry_60d, expiry_90d,
                        fwdv_3060::float, fwdfct_3060::float,
                        call_fwdfct_3060::float, put_fwdfct_3060::float,
-                       iv_slope_3060::float,
+                       iv_slope_3060::float, call_slope_3060::float,
+                       put_slope_3060::float,
+                       call_iv_30_percentile::float,
+                       call_iv_60_percentile::float,
+                       put_iv_30_percentile::float,
+                       put_iv_60_percentile::float,
                        ROUND(
                            (PERCENT_RANK() OVER (ORDER BY fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
                        )::float AS fwdfct_3060_percentile,
-                       COALESCE(
-                           call_fwdfct_3060_percentile::float,
-                           ROUND(
-                               (PERCENT_RANK() OVER (ORDER BY call_fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
-                           )::float
-                       ) AS call_fwdfct_3060_percentile,
-                       COALESCE(
-                           put_fwdfct_3060_percentile::float,
-                           ROUND(
-                               (PERCENT_RANK() OVER (ORDER BY put_fwdfct_3060 NULLS FIRST) * 100)::numeric, 2
-                           )::float
-                       ) AS put_fwdfct_3060_percentile,
-                       ROUND(
-                           (PERCENT_RANK() OVER (ORDER BY iv_slope_3060 NULLS FIRST) * 100)::numeric, 2
-                       )::float AS slope_percentile
+                       call_fwdfct_3060_percentile::float,
+                       put_fwdfct_3060_percentile::float,
+                       call_slope_3060_percentile::float,
+                       put_slope_3060_percentile::float
                 FROM symbol_daily_metrics
                 WHERE symbol = $1
                 ORDER BY trade_date DESC
@@ -1669,6 +1679,14 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         "max_fwdfct_3060",
         "call_fwdfct_3060_percentile",
         "put_fwdfct_3060_percentile",
+        "call_iv_30_percentile",
+        "call_iv_60_percentile",
+        "put_iv_30_percentile",
+        "put_iv_60_percentile",
+        "call_slope_3060",
+        "put_slope_3060",
+        "call_slope_3060_percentile",
+        "put_slope_3060_percentile",
         "fev_30",
         "iv_slope_3060",
         "iv_term_structure_source",
@@ -1737,6 +1755,14 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
         "max_fwdfct_3060",
         "call_fwdfct_3060_percentile",
         "put_fwdfct_3060_percentile",
+        "call_iv_30_percentile",
+        "call_iv_60_percentile",
+        "put_iv_30_percentile",
+        "put_iv_60_percentile",
+        "call_slope_3060",
+        "put_slope_3060",
+        "call_slope_3060_percentile",
+        "put_slope_3060_percentile",
         "fev_30",
         "iv_slope_3060",
         "iv30_rv30_ratio",
@@ -1812,9 +1838,15 @@ def _refresh_current_forward_factor_percentiles(
         "fwdfct_3060": "fwdfct_3060_percentile",
         "call_fwdfct_3060": "call_fwdfct_3060_percentile",
         "put_fwdfct_3060": "put_fwdfct_3060_percentile",
+        "call_iv_30": "call_iv_30_percentile",
+        "call_iv_60": "call_iv_60_percentile",
+        "put_iv_30": "put_iv_30_percentile",
+        "put_iv_60": "put_iv_60_percentile",
+        "call_slope_3060": "call_slope_3060_percentile",
+        "put_slope_3060": "put_slope_3060_percentile",
     }
     for value_field, percentile_field in fields.items():
-        percentile = _percent_rank_current(history, value_field, current.get(value_field))
+        percentile = _percent_rank_current(history, value_field, current)
         if percentile is not None:
             current[percentile_field] = percentile
 
@@ -1829,7 +1861,17 @@ async def _refresh_live_payload_forward_percentiles(
         return payload
     if not any(
         payload.get(field) is not None
-        for field in ("fwdfct_3060", "call_fwdfct_3060", "put_fwdfct_3060")
+        for field in (
+            "fwdfct_3060",
+            "call_fwdfct_3060",
+            "put_fwdfct_3060",
+            "call_iv_30",
+            "call_iv_60",
+            "put_iv_30",
+            "put_iv_60",
+            "call_slope_3060",
+            "put_slope_3060",
+        )
     ):
         return payload
     history = await repo.history(symbol, 252)
@@ -1841,21 +1883,29 @@ async def _refresh_live_payload_forward_percentiles(
 def _percent_rank_current(
     history: list[dict[str, Any]],
     field: str,
-    current_value: Any,
+    current: dict[str, Any],
 ) -> float | None:
-    current_number = _float_or_none(current_value)
+    current_number = _float_or_none(current.get(field))
     if current_number is None:
         return None
+
+    current_date = _date_from_snapshot(current.get("snapshot_time")) or _date_to_string(
+        current.get("trade_date")
+    )
     values = [
         number
-        for item in history
-        if (number := _float_or_none(item.get(field))) is not None
+        for item in reversed(history)
+        if (
+            not current_date
+            or (_date_to_string(item.get("trade_date")) or "") < current_date
+        )
+        and (number := _float_or_none(item.get(field))) is not None
     ]
-    values.append(current_number)
-    if len(values) <= 1:
-        return 0.0
-    less = sum(1 for value in values if value < current_number)
-    return round(100.0 * less / (len(values) - 1), 2)
+    values = values[:252]
+    if len(values) < 60:
+        return None
+    less_equal = sum(1 for value in values if value <= current_number)
+    return round(100.0 * less_equal / len(values), 2)
 
 
 def _date_from_snapshot(value: Any) -> str | None:

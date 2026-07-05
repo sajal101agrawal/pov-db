@@ -47,6 +47,8 @@ def test_forward_factors_use_separate_atm_call_and_put_iv_term_structures() -> N
     assert math.isclose(metrics["call_fwdfct_3060"], 0.30 / call_fwdv - 1)
     assert math.isclose(metrics["put_fwdfct_3060"], 0.20 / put_fwdv - 1)
     assert math.isclose(metrics["fwdfct_3060"], 0.25 / average_fwdv - 1)
+    assert math.isclose(metrics["call_slope_3060"], (0.27 - 0.30) / (33 - 5))
+    assert math.isclose(metrics["put_slope_3060"], (0.19 - 0.20) / (33 - 5))
 
 
 def test_missing_call_leg_does_not_borrow_put_iv_for_call_forward_factor() -> None:

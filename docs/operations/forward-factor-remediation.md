@@ -8,7 +8,11 @@ This change keeps `fwdfct_3060` as the Average Forward Factor compatibility fiel
 
 - `call_iv_30/60/90` and `put_iv_30/60/90`
 - `call_fwdfct_3060` and `put_fwdfct_3060`
+- `call_slope_3060` and `put_slope_3060`
+- `call_iv_30_percentile`, `call_iv_60_percentile`, `put_iv_30_percentile`, and
+  `put_iv_60_percentile`
 - `call_fwdfct_3060_percentile` and `put_fwdfct_3060_percentile`
+- `call_slope_3060_percentile` and `put_slope_3060_percentile`
 - the Golden Mispricing OR signal (`Call Forward Factor > 16%` or `Put Forward Factor > 16%`)
 
 The daily EOD pipeline and live option-chain overlay calculate these fields automatically for
@@ -56,7 +60,8 @@ RUN_FORWARD_FACTOR_BACKFILL=1 scripts/deploy_prod.sh
 The backfill reads stored `options_historical.iv` and same-day `equity_historical.close`, selects
 the near-expiry ATM strike from that historical date's spot close, reuses that same strike for the
 far expiry, and recomputes the full Forward Factor stack: average IVs, call/put IVs, forward vol,
-average/call/put Forward Factors, FEV, slope, IV/FEV ratio, and call/put FF percentiles.
+average/call/put Forward Factors, FEV, slope, IV/FEV ratio, side-specific IV percentiles, and
+call/put FF and slope percentiles.
 
 Only the selected same-strike CE/PE rows are loaded for each symbol/date/expiry, avoiding a full
 option-chain transfer into Python. Changes are committed per symbol. Every materially changed row is
@@ -64,8 +69,9 @@ recorded in `analytics_metric_audit`, and the run status/summary is recorded in
 `analytics_backfill_runs`. Dashboard, history, all-dashboard, and term-structure caches are
 invalidated after success.
 
-The script is restart-safe and idempotent. A completed second run over unchanged data reports
-`updated: 0` and `audited_changes: 0`.
+The script is restart-safe and idempotent. A completed second run over unchanged raw IV/Forward
+Factor values reports `updated: 0` and `audited_changes: 0`, while still refreshing percentile
+columns for the selected metric dates.
 
 ## Verification
 
@@ -75,11 +81,18 @@ Check the latest populated rows:
 SELECT symbol, trade_date,
        fwdfct_3060 AS average_forward_factor,
        call_fwdfct_3060, put_fwdfct_3060,
-       call_fwdfct_3060_percentile, put_fwdfct_3060_percentile
+       call_slope_3060, put_slope_3060,
+       call_iv_30_percentile, call_iv_60_percentile,
+       put_iv_30_percentile, put_iv_60_percentile,
+       call_fwdfct_3060_percentile, put_fwdfct_3060_percentile,
+       call_slope_3060_percentile, put_slope_3060_percentile
 FROM symbol_daily_metrics
 ORDER BY trade_date DESC, symbol
 LIMIT 50;
 ```
+
+These percentile fields use up to 252 prior valid rows for the same symbol, exclude the current
+trade date, and stay null until at least 60 valid prior observations exist.
 
 Check run and audit lineage:
 
@@ -98,4 +111,5 @@ docker compose -p pov-db -f docker-compose.prod.yml run --rm api \
 ```
 
 Before historical execution, existing rows legitimately return null call/put fields, show no
-call/put rating, and do not enter the Golden strategy. New daily rows are still populated normally.
+call/put signal quality, and do not enter the Golden strategy. New daily rows are still populated
+normally.

@@ -214,6 +214,8 @@ CREATE TABLE IF NOT EXISTS symbol_daily_metrics (
     put_fwdfct_3060 NUMERIC(18,8),
     fev_30 NUMERIC(18,8),
     iv_slope_3060 NUMERIC(18,8),
+    call_slope_3060 NUMERIC(18,8),
+    put_slope_3060 NUMERIC(18,8),
     skew_20 NUMERIC(18,8),
     skew_25 NUMERIC(18,8),
     skew_30 NUMERIC(18,8),
@@ -226,8 +228,14 @@ CREATE TABLE IF NOT EXISTS symbol_daily_metrics (
     iv_30_percentile NUMERIC(6,2),
     iv_60_percentile NUMERIC(6,2),
     iv_90_percentile NUMERIC(6,2),
+    call_iv_30_percentile NUMERIC(6,2),
+    call_iv_60_percentile NUMERIC(6,2),
+    put_iv_30_percentile NUMERIC(6,2),
+    put_iv_60_percentile NUMERIC(6,2),
     call_fwdfct_3060_percentile NUMERIC(6,2),
     put_fwdfct_3060_percentile NUMERIC(6,2),
+    call_slope_3060_percentile NUMERIC(6,2),
+    put_slope_3060_percentile NUMERIC(6,2),
     vrp_percentile NUMERIC(6,2),
     skew_percentile NUMERIC(6,2),
     skew_rank SMALLINT,
@@ -248,6 +256,16 @@ ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_iv_60 NUMERIC(18,8
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_iv_90 NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_fwdfct_3060 NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_fwdfct_3060 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_slope_3060 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_slope_3060 NUMERIC(18,8);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_iv_30_percentile NUMERIC(6,2);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_iv_60_percentile NUMERIC(6,2);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_iv_30_percentile NUMERIC(6,2);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_iv_60_percentile NUMERIC(6,2);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_fwdfct_3060_percentile NUMERIC(6,2);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_fwdfct_3060_percentile NUMERIC(6,2);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_slope_3060_percentile NUMERIC(6,2);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_slope_3060_percentile NUMERIC(6,2);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_90 NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_10_raw NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_20_raw NUMERIC(18,8);

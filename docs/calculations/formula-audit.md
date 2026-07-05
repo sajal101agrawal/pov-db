@@ -173,14 +173,33 @@ put_fwdv_3060 = sqrt((put_iv_60^2 * dte_60 - put_iv_30^2 * dte_30) / (dte_60 - d
 put_fwdfct_3060 = (put_iv_30 / put_fwdv_3060) - 1
 ```
 
+Side-specific IV slopes use the same selected-expiry DTEs:
+
+```text
+call_slope_3060 = (call_iv_60 - call_iv_30) / (dte_60 - dte_30)
+put_slope_3060 = (put_iv_60 - put_iv_30) / (dte_60 - dte_30)
+```
+
 Historical rows select the ATM strike from the first selected expiry bucket using that date's spot
 price, then reuse the same strike in the second and third expiry buckets. The separate call and put
 Forward Factor percentile fields are `call_fwdfct_3060_percentile` and
 `put_fwdfct_3060_percentile`.
 
-Dashboard rating and the Golden Mispricing Strategy use the required OR rule. Equivalently, the
+Rolling IV, Forward Factor, and slope percentiles are calculated independently per symbol and
+metric from up to 252 prior valid observations:
+
+```text
+percentile = count(history_value <= current_value) / valid_count * 100
+```
+
+The current trade date is excluded, null historical values are excluded, and the percentile remains
+null until at least 60 valid prior observations exist.
+
+The Golden Mispricing Strategy uses the required OR rule for eligibility. Equivalently, the
 screening value is `max(call_fwdfct_3060, put_fwdfct_3060)`, ignoring null sides. A symbol crosses
-the strategy threshold when either available side is greater than `0.16` (`16%`).
+the strategy threshold when either available side is greater than `0.16` (`16%`). The dashboard
+then displays separate Call Signal Quality and Put Signal Quality labels using the side-specific
+Forward Factor percentile plus current-month and next-month side-specific IV percentiles.
 
 Slope:
 

@@ -104,8 +104,16 @@ Important columns:
   name is retained for compatibility.
 - `call_fwdfct_3060`: Call Forward Factor from `call_iv_30` and `call_iv_60`.
 - `put_fwdfct_3060`: Put Forward Factor from `put_iv_30` and `put_iv_60`.
+- `call_slope_3060`: `(call_iv_60 - call_iv_30) / (dte_60 - dte_30)`.
+- `put_slope_3060`: `(put_iv_60 - put_iv_30) / (dte_60 - dte_30)`.
+- `call_iv_30_percentile` / `call_iv_60_percentile`: rolling historical percentile ranks for
+  current-month and next-month ATM call IV.
+- `put_iv_30_percentile` / `put_iv_60_percentile`: rolling historical percentile ranks for
+  current-month and next-month ATM put IV.
 - `call_fwdfct_3060_percentile` / `put_fwdfct_3060_percentile`: separate rolling historical
   percentile ranks for call and put Forward Factor.
+- `call_slope_3060_percentile` / `put_slope_3060_percentile`: separate rolling historical
+  percentile ranks for call and put IV slopes.
 - `iv_slope_3060`: `(iv_60 - iv_30) / (dte_60 - dte_30)`.
 - `skew_20/25/30`: put IV minus call IV at the closest target deltas.
 - `avg_option_volume`: total traded option contracts for the symbol/date, summed across all
@@ -118,9 +126,10 @@ Expected nulls:
 - RV fields are null until enough historical closes exist.
 - VRP is null until current RV30 and lagged IV30 exist.
 - Weekly RSI is null until enough weekly closes exist.
-- Percentiles are null when the current value is null. Non-null percentile calculations rank
-  against the trailing available non-null observations for the same symbol; null observations
-  are not counted in the percentile denominator.
+- Percentiles are null when the current value is null or fewer than 60 valid prior observations
+  exist. Non-null percentile calculations rank against up to 252 prior available non-null
+  observations for the same symbol using `count(history <= current) / valid_count * 100`; null
+  observations and the current trade date are not counted in the denominator.
 - `nearest_ce_iv` can be null if the selected ATM call leg has no valid IV.
 - Call/put IV and factor fields can be null independently when that option side lacks a usable IV
   or produces negative forward variance.

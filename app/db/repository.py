@@ -103,6 +103,10 @@ class MarketRepository:
                    sdm.put_iv_30::float,
                    sdm.put_iv_60::float,
                    sdm.put_iv_90::float,
+                   sdm.call_iv_30_percentile::float,
+                   sdm.call_iv_60_percentile::float,
+                   sdm.put_iv_30_percentile::float,
+                   sdm.put_iv_60_percentile::float,
                    CASE WHEN sdm.rv_calculation_version >= 2 THEN sdm.rv_30::float END AS rv_30,
                    CASE WHEN sdm.vrp_signal_enabled THEN sdm.vrp::float END AS vrp,
                    sdm.rv_data_status,
@@ -115,6 +119,10 @@ class MarketRepository:
                    sdm.put_fwdfct_3060::float,
                    sdm.call_fwdfct_3060_percentile::float,
                    sdm.put_fwdfct_3060_percentile::float,
+                   sdm.call_slope_3060::float,
+                   sdm.put_slope_3060::float,
+                   sdm.call_slope_3060_percentile::float,
+                   sdm.put_slope_3060_percentile::float,
                    sdm.fev_30::float,
                    sdm.iv_slope_3060::float,
                    sdm.dte_30,
@@ -696,55 +704,135 @@ class MarketRepository:
                 "fwdfct_3060": item.get("fwdfct_3060"),
                 "call_fwdfct_3060": item.get("call_fwdfct_3060"),
                 "put_fwdfct_3060": item.get("put_fwdfct_3060"),
+                "call_iv_30": item.get("call_iv_30"),
+                "call_iv_60": item.get("call_iv_60"),
+                "put_iv_30": item.get("put_iv_30"),
+                "put_iv_60": item.get("put_iv_60"),
+                "call_slope_3060": item.get("call_slope_3060"),
+                "put_slope_3060": item.get("put_slope_3060"),
+                "trade_date": item.get("trade_date") or item.get("snapshot_time"),
             }
             for item in payloads
             if item.get("symbol")
             and any(
                 item.get(field) is not None
-                for field in ("fwdfct_3060", "call_fwdfct_3060", "put_fwdfct_3060")
+                for field in (
+                    "fwdfct_3060",
+                    "call_fwdfct_3060",
+                    "put_fwdfct_3060",
+                    "call_iv_30",
+                    "call_iv_60",
+                    "put_iv_30",
+                    "put_iv_60",
+                    "call_slope_3060",
+                    "put_slope_3060",
+                )
             )
         ]
         if not items:
             return {}
         rows = await self.pool.fetch(
             """
-            WITH live AS (
+            WITH live_raw AS (
                 SELECT *
                 FROM jsonb_to_recordset($1::jsonb) AS x(
                     symbol text,
                     fwdfct_3060 double precision,
                     call_fwdfct_3060 double precision,
-                    put_fwdfct_3060 double precision
+                    put_fwdfct_3060 double precision,
+                    call_iv_30 double precision,
+                    call_iv_60 double precision,
+                    put_iv_30 double precision,
+                    put_iv_60 double precision,
+                    call_slope_3060 double precision,
+                    put_slope_3060 double precision,
+                    trade_date text
                 )
+            ),
+            live AS (
+                SELECT *,
+                       CASE
+                           WHEN trade_date ~ '^\\d{4}-\\d{2}-\\d{2}'
+                           THEN LEFT(trade_date, 10)::date
+                       END AS effective_trade_date
+                FROM live_raw
+            ),
+            metric_counts AS (
+                SELECT live.symbol,
+                       metric.metric,
+                       metric.current_value,
+                       COUNT(hist.value) AS valid_count,
+                       COUNT(hist.value) FILTER (WHERE hist.value <= metric.current_value) AS le_count
+                FROM live
+                CROSS JOIN LATERAL (
+                    VALUES
+                        ('fwdfct_3060', live.fwdfct_3060),
+                        ('call_fwdfct_3060', live.call_fwdfct_3060),
+                        ('put_fwdfct_3060', live.put_fwdfct_3060),
+                        ('call_iv_30', live.call_iv_30),
+                        ('call_iv_60', live.call_iv_60),
+                        ('put_iv_30', live.put_iv_30),
+                        ('put_iv_60', live.put_iv_60),
+                        ('call_slope_3060', live.call_slope_3060),
+                        ('put_slope_3060', live.put_slope_3060)
+                ) AS metric(metric, current_value)
+                LEFT JOIN LATERAL (
+                    SELECT value
+                    FROM (
+                        SELECT CASE metric.metric
+                                   WHEN 'fwdfct_3060' THEN h.fwdfct_3060::double precision
+                                   WHEN 'call_fwdfct_3060' THEN h.call_fwdfct_3060::double precision
+                                   WHEN 'put_fwdfct_3060' THEN h.put_fwdfct_3060::double precision
+                                   WHEN 'call_iv_30' THEN h.call_iv_30::double precision
+                                   WHEN 'call_iv_60' THEN h.call_iv_60::double precision
+                                   WHEN 'put_iv_30' THEN h.put_iv_30::double precision
+                                   WHEN 'put_iv_60' THEN h.put_iv_60::double precision
+                                   WHEN 'call_slope_3060' THEN h.call_slope_3060::double precision
+                                   WHEN 'put_slope_3060' THEN h.put_slope_3060::double precision
+                               END AS value
+                        FROM symbol_daily_metrics h
+                        WHERE h.symbol = live.symbol
+                          AND (
+                              live.effective_trade_date IS NULL
+                              OR h.trade_date < live.effective_trade_date
+                          )
+                        ORDER BY h.trade_date DESC
+                    ) raw_values
+                    WHERE value IS NOT NULL
+                    LIMIT $2
+                ) hist ON TRUE
+                GROUP BY live.symbol, metric.metric, metric.current_value
+            ),
+            metric_percentiles AS (
+                SELECT symbol,
+                       metric,
+                       CASE
+                           WHEN current_value IS NULL OR valid_count < 60 THEN NULL
+                           ELSE 100.0 * le_count / valid_count
+                       END AS percentile
+                FROM metric_counts
             )
-            SELECT live.symbol,
-                   CASE WHEN live.fwdfct_3060 IS NULL THEN NULL ELSE
-                       100.0 * percent_rank(live.fwdfct_3060)
-                       WITHIN GROUP (ORDER BY hist.fwdfct_3060)
-                       FILTER (WHERE hist.fwdfct_3060 IS NOT NULL)
-                   END AS fwdfct_3060_percentile,
-                   CASE WHEN live.call_fwdfct_3060 IS NULL THEN NULL ELSE
-                       100.0 * percent_rank(live.call_fwdfct_3060)
-                       WITHIN GROUP (ORDER BY hist.call_fwdfct_3060)
-                       FILTER (WHERE hist.call_fwdfct_3060 IS NOT NULL)
-                   END AS call_fwdfct_3060_percentile,
-                   CASE WHEN live.put_fwdfct_3060 IS NULL THEN NULL ELSE
-                       100.0 * percent_rank(live.put_fwdfct_3060)
-                       WITHIN GROUP (ORDER BY hist.put_fwdfct_3060)
-                       FILTER (WHERE hist.put_fwdfct_3060 IS NOT NULL)
-                   END AS put_fwdfct_3060_percentile
-            FROM live
-            LEFT JOIN LATERAL (
-                SELECT fwdfct_3060::float,
-                       call_fwdfct_3060::float,
-                       put_fwdfct_3060::float
-                FROM symbol_daily_metrics h
-                WHERE h.symbol = live.symbol
-                ORDER BY h.trade_date DESC
-                LIMIT $2
-            ) hist ON TRUE
-            GROUP BY live.symbol, live.fwdfct_3060,
-                     live.call_fwdfct_3060, live.put_fwdfct_3060
+            SELECT symbol,
+                   MAX(percentile) FILTER (WHERE metric = 'fwdfct_3060')
+                       AS fwdfct_3060_percentile,
+                   MAX(percentile) FILTER (WHERE metric = 'call_fwdfct_3060')
+                       AS call_fwdfct_3060_percentile,
+                   MAX(percentile) FILTER (WHERE metric = 'put_fwdfct_3060')
+                       AS put_fwdfct_3060_percentile,
+                   MAX(percentile) FILTER (WHERE metric = 'call_iv_30')
+                       AS call_iv_30_percentile,
+                   MAX(percentile) FILTER (WHERE metric = 'call_iv_60')
+                       AS call_iv_60_percentile,
+                   MAX(percentile) FILTER (WHERE metric = 'put_iv_30')
+                       AS put_iv_30_percentile,
+                   MAX(percentile) FILTER (WHERE metric = 'put_iv_60')
+                       AS put_iv_60_percentile,
+                   MAX(percentile) FILTER (WHERE metric = 'call_slope_3060')
+                       AS call_slope_3060_percentile,
+                   MAX(percentile) FILTER (WHERE metric = 'put_slope_3060')
+                       AS put_slope_3060_percentile
+            FROM metric_percentiles
+            GROUP BY symbol
             """,
             json.dumps(items, default=str),
             lookback,
@@ -1024,53 +1112,90 @@ class MarketRepository:
     async def refresh_percentiles(self, trade_date: date) -> None:
         await self.pool.execute(
             """
-            WITH hist AS (
+            WITH current_rows AS (
+                SELECT *
+                FROM symbol_daily_metrics
+                WHERE trade_date = $1
+            ),
+            metric_counts AS (
                 SELECT cur.symbol,
-                       CASE WHEN cur.iv_30 IS NULL THEN NULL ELSE
-                           100.0 * percent_rank(cur.iv_30) WITHIN GROUP (ORDER BY h.iv_30)
-                           FILTER (WHERE h.iv_30 IS NOT NULL)
-                       END AS iv30_pct,
-                       CASE WHEN cur.iv_60 IS NULL THEN NULL ELSE
-                           100.0 * percent_rank(cur.iv_60) WITHIN GROUP (ORDER BY h.iv_60)
-                           FILTER (WHERE h.iv_60 IS NOT NULL)
-                       END AS iv60_pct,
-                       CASE WHEN cur.iv_90 IS NULL THEN NULL ELSE
-                           100.0 * percent_rank(cur.iv_90) WITHIN GROUP (ORDER BY h.iv_90)
-                           FILTER (WHERE h.iv_90 IS NOT NULL)
-                       END AS iv90_pct,
-                       CASE WHEN cur.call_fwdfct_3060 IS NULL THEN NULL ELSE
-                           100.0 * percent_rank(cur.call_fwdfct_3060)
-                           WITHIN GROUP (ORDER BY h.call_fwdfct_3060)
-                           FILTER (WHERE h.call_fwdfct_3060 IS NOT NULL)
-                       END AS call_ff_pct,
-                       CASE WHEN cur.put_fwdfct_3060 IS NULL THEN NULL ELSE
-                           100.0 * percent_rank(cur.put_fwdfct_3060)
-                           WITHIN GROUP (ORDER BY h.put_fwdfct_3060)
-                           FILTER (WHERE h.put_fwdfct_3060 IS NOT NULL)
-                       END AS put_ff_pct,
-                       CASE
-                           WHEN cur.vrp IS NULL
-                             OR BOOL_OR(h.rv_calculation_version < 2)
-                           THEN NULL
-                           ELSE
-                           100.0 * percent_rank(cur.vrp) WITHIN GROUP (ORDER BY h.vrp)
-                           FILTER (WHERE h.vrp IS NOT NULL AND h.vrp_signal_enabled)
-                       END AS vrp_pct
-                FROM symbol_daily_metrics cur
-                JOIN LATERAL (
-                    SELECT iv_30, iv_60, iv_90,
-                           call_fwdfct_3060, put_fwdfct_3060,
-                           vrp,
-                           vrp_signal_enabled, rv_calculation_version
-                    FROM symbol_daily_metrics h
-                    WHERE h.symbol = cur.symbol
-                      AND h.trade_date <= cur.trade_date
-                    ORDER BY h.trade_date DESC
+                       metric.metric,
+                       metric.current_value,
+                       COUNT(hist.value) AS valid_count,
+                       COUNT(hist.value) FILTER (WHERE hist.value <= metric.current_value) AS le_count
+                FROM current_rows cur
+                CROSS JOIN LATERAL (
+                    VALUES
+                        ('iv_30', cur.iv_30),
+                        ('iv_60', cur.iv_60),
+                        ('iv_90', cur.iv_90),
+                        ('call_iv_30', cur.call_iv_30),
+                        ('call_iv_60', cur.call_iv_60),
+                        ('put_iv_30', cur.put_iv_30),
+                        ('put_iv_60', cur.put_iv_60),
+                        ('call_fwdfct_3060', cur.call_fwdfct_3060),
+                        ('put_fwdfct_3060', cur.put_fwdfct_3060),
+                        ('call_slope_3060', cur.call_slope_3060),
+                        ('put_slope_3060', cur.put_slope_3060),
+                        ('vrp', CASE WHEN cur.vrp_signal_enabled THEN cur.vrp END)
+                ) AS metric(metric, current_value)
+                LEFT JOIN LATERAL (
+                    SELECT value
+                    FROM (
+                        SELECT CASE metric.metric
+                                   WHEN 'iv_30' THEN h.iv_30
+                                   WHEN 'iv_60' THEN h.iv_60
+                                   WHEN 'iv_90' THEN h.iv_90
+                                   WHEN 'call_iv_30' THEN h.call_iv_30
+                                   WHEN 'call_iv_60' THEN h.call_iv_60
+                                   WHEN 'put_iv_30' THEN h.put_iv_30
+                                   WHEN 'put_iv_60' THEN h.put_iv_60
+                                   WHEN 'call_fwdfct_3060' THEN h.call_fwdfct_3060
+                                   WHEN 'put_fwdfct_3060' THEN h.put_fwdfct_3060
+                                   WHEN 'call_slope_3060' THEN h.call_slope_3060
+                                   WHEN 'put_slope_3060' THEN h.put_slope_3060
+                                   WHEN 'vrp' THEN
+                                       CASE
+                                           WHEN h.vrp_signal_enabled
+                                            AND h.rv_calculation_version >= 2
+                                           THEN h.vrp
+                                       END
+                               END AS value
+                        FROM symbol_daily_metrics h
+                        WHERE h.symbol = cur.symbol
+                          AND h.trade_date < cur.trade_date
+                        ORDER BY h.trade_date DESC
+                    ) raw_values
+                    WHERE value IS NOT NULL
                     LIMIT 252
-                ) h ON TRUE
-                WHERE cur.trade_date = $1
-                GROUP BY cur.symbol, cur.iv_30, cur.iv_60, cur.iv_90,
-                         cur.call_fwdfct_3060, cur.put_fwdfct_3060, cur.vrp
+                ) hist ON TRUE
+                GROUP BY cur.symbol, metric.metric, metric.current_value
+            ),
+            metric_percentiles AS (
+                SELECT symbol,
+                       metric,
+                       CASE
+                           WHEN current_value IS NULL OR valid_count < 60 THEN NULL
+                           ELSE 100.0 * le_count / valid_count
+                       END AS percentile
+                FROM metric_counts
+            ),
+            hist AS (
+                SELECT symbol,
+                       MAX(percentile) FILTER (WHERE metric = 'iv_30') AS iv30_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'iv_60') AS iv60_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'iv_90') AS iv90_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'call_iv_30') AS call_iv30_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'call_iv_60') AS call_iv60_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'put_iv_30') AS put_iv30_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'put_iv_60') AS put_iv60_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'call_fwdfct_3060') AS call_ff_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'put_fwdfct_3060') AS put_ff_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'call_slope_3060') AS call_slope_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'put_slope_3060') AS put_slope_pct,
+                       MAX(percentile) FILTER (WHERE metric = 'vrp') AS vrp_pct
+                FROM metric_percentiles
+                GROUP BY symbol
             ),
             ranked AS (
                 SELECT symbol,
@@ -1083,8 +1208,14 @@ class MarketRepository:
             SET iv_30_percentile = hist.iv30_pct,
                 iv_60_percentile = hist.iv60_pct,
                 iv_90_percentile = hist.iv90_pct,
+                call_iv_30_percentile = hist.call_iv30_pct,
+                call_iv_60_percentile = hist.call_iv60_pct,
+                put_iv_30_percentile = hist.put_iv30_pct,
+                put_iv_60_percentile = hist.put_iv60_pct,
                 call_fwdfct_3060_percentile = hist.call_ff_pct,
                 put_fwdfct_3060_percentile = hist.put_ff_pct,
+                call_slope_3060_percentile = hist.call_slope_pct,
+                put_slope_3060_percentile = hist.put_slope_pct,
                 vrp_percentile = hist.vrp_pct,
                 skew_percentile = ranked.skew_percentile,
                 skew_rank = ranked.skew_rank,
@@ -1319,6 +1450,7 @@ class MarketRepository:
                    -- Forward volatility
                    fwdv_3060::float, fwdfct_3060::float,
                    call_fwdfct_3060::float, put_fwdfct_3060::float, fev_30::float,
+                   call_slope_3060::float, put_slope_3060::float,
                    call_fwdfct_3060_percentile::float,
                    put_fwdfct_3060_percentile::float,
                    -- Skew (all delta levels)
@@ -1329,8 +1461,12 @@ class MarketRepository:
                    daily_rsi::float, weekly_rsi::float,
                    -- Percentiles / ranks
                    iv_30_percentile::float, iv_60_percentile::float, iv_90_percentile::float,
+                   call_iv_30_percentile::float, call_iv_60_percentile::float,
+                   put_iv_30_percentile::float, put_iv_60_percentile::float,
                    call_fwdfct_3060_percentile::float,
                    put_fwdfct_3060_percentile::float,
+                   call_slope_3060_percentile::float,
+                   put_slope_3060_percentile::float,
                    vrp_percentile::float, skew_percentile::float, skew_rank,
                    -- Volume
                    avg_option_volume::float

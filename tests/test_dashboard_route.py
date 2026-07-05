@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from app.api.routes import (
     _matches_numeric_filters,
     _overlay_live_dashboard_payload,
     _overlay_live_term_structure,
+    _refresh_current_forward_factor_percentiles,
 )
 
 
@@ -74,3 +77,51 @@ def test_term_structure_live_overlay_uses_snapshot_date() -> None:
         "2026-06-30",
         "2026-07-01",
     ]
+
+
+def test_live_percentile_refresh_includes_side_specific_iv_terms() -> None:
+    history = [
+        {
+            "trade_date": (date(2026, 1, 1) + timedelta(days=index)).isoformat(),
+            "call_iv_30": 0.10 + index / 1000,
+            "call_iv_60": 0.40 - index / 1000,
+            "put_iv_30": 0.20 + index / 1000,
+            "put_iv_60": 0.30 - index / 1000,
+            "call_slope_3060": -0.020 + index / 10000,
+            "put_slope_3060": -0.010 + index / 10000,
+        }
+        for index in range(60)
+    ]
+    current = {
+        "trade_date": "2026-04-01",
+        "call_iv_30": 0.159,
+        "call_iv_60": 0.341,
+        "put_iv_30": 0.230,
+        "put_iv_60": 0.270,
+        "call_slope_3060": -0.018,
+        "put_slope_3060": -0.005,
+    }
+
+    _refresh_current_forward_factor_percentiles(history, current)
+
+    assert current["call_iv_30_percentile"] == 100.0
+    assert current["call_iv_60_percentile"] == 1.67
+    assert current["put_iv_30_percentile"] == 51.67
+    assert current["put_iv_60_percentile"] == 50.0
+    assert current["call_slope_3060_percentile"] == 35.0
+    assert current["put_slope_3060_percentile"] == 85.0
+
+
+def test_live_percentile_refresh_requires_sixty_historical_values() -> None:
+    history = [
+        {
+            "trade_date": (date(2026, 1, 1) + timedelta(days=index)).isoformat(),
+            "call_iv_30": 0.10 + index / 1000,
+        }
+        for index in range(59)
+    ]
+    current = {"trade_date": "2026-04-01", "call_iv_30": 0.20}
+
+    _refresh_current_forward_factor_percentiles(history, current)
+
+    assert "call_iv_30_percentile" not in current

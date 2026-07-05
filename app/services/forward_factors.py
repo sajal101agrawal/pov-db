@@ -7,6 +7,7 @@ from app.services.calculations import (
     MAX_ANALYTICS_IV,
     forward_factor,
     forward_volatility,
+    iv_slope,
 )
 
 
@@ -91,6 +92,12 @@ def compute_forward_factor_metrics(
             "fwdfct_3060": forward_factor(values["iv_30"], average_fwdv),
             "call_fwdfct_3060": forward_factor(values["call_iv_30"], call_fwdv),
             "put_fwdfct_3060": forward_factor(values["put_iv_30"], put_fwdv),
+            "call_slope_3060": iv_slope(
+                values["call_iv_30"], values["call_iv_60"], dte_30 or 30, dte_60 or 60
+            ),
+            "put_slope_3060": iv_slope(
+                values["put_iv_30"], values["put_iv_60"], dte_30 or 30, dte_60 or 60
+            ),
         }
     )
     return values

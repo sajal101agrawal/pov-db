@@ -48,6 +48,8 @@ FORWARD_FIELDS = (
     "put_fwdfct_3060",
     "fev_30",
     "iv_slope_3060",
+    "call_slope_3060",
+    "put_slope_3060",
     "iv30_fev30_ratio",
 )
 
@@ -118,12 +120,28 @@ async def main() -> None:
         )
         or 0
     )
+    metric_dates = [
+        row["trade_date"]
+        for row in await pool.fetch(
+            """
+            SELECT DISTINCT trade_date
+            FROM symbol_daily_metrics
+            WHERE trade_date BETWEEN $1 AND $2
+              AND ($3::text[] IS NULL OR symbol = ANY($3::text[]))
+            ORDER BY trade_date
+            """,
+            start,
+            end,
+            requested_symbols,
+        )
+    ]
     preview = {
         "event": "forward_factor_backfill_preview",
         "start": start,
         "end": end,
         "symbols": len(symbols),
         "metric_rows": metric_count,
+        "percentile_dates": len(metric_dates),
         "execute": args.execute,
     }
     print(json.dumps(preview, default=str), flush=True)
@@ -189,6 +207,18 @@ async def main() -> None:
                     calculated.get("dte_30") or 30,
                     calculated.get("dte_60") or 60,
                 )
+                calculated["call_slope_3060"] = iv_slope(
+                    calculated.get("call_iv_30"),
+                    calculated.get("call_iv_60"),
+                    calculated.get("dte_30") or 30,
+                    calculated.get("dte_60") or 60,
+                )
+                calculated["put_slope_3060"] = iv_slope(
+                    calculated.get("put_iv_30"),
+                    calculated.get("put_iv_60"),
+                    calculated.get("dte_30") or 30,
+                    calculated.get("dte_60") or 60,
+                )
                 calculated["iv30_fev30_ratio"] = ratio(
                     calculated.get("iv_30"),
                     calculated.get("fev_30"),
@@ -238,7 +268,8 @@ async def main() -> None:
                     flush=True,
                 )
 
-        for percentile_date in sorted(updated_dates):
+        percentile_dates = set(metric_dates) | updated_dates
+        for percentile_date in sorted(percentile_dates):
             await repository.refresh_percentiles(percentile_date)
 
         cache_keys_deleted = await invalidate_forward_factor_cache(settings.redis_url)
@@ -246,7 +277,7 @@ async def main() -> None:
             updated=updated,
             audited_changes=audited,
             skipped_no_chain=skipped_no_chain,
-            percentile_dates_refreshed=len(updated_dates),
+            percentile_dates_refreshed=len(percentile_dates),
             cache_keys_deleted=cache_keys_deleted,
         )
         await pool.execute(

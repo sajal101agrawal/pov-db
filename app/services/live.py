@@ -481,6 +481,12 @@ async def _apply_live_forward_factor_percentiles(
             "fwdfct_3060_percentile",
             "call_fwdfct_3060_percentile",
             "put_fwdfct_3060_percentile",
+            "call_iv_30_percentile",
+            "call_iv_60_percentile",
+            "put_iv_30_percentile",
+            "put_iv_60_percentile",
+            "call_slope_3060_percentile",
+            "put_slope_3060_percentile",
         ):
             if values.get(key) is not None:
                 payload[key] = values[key]
@@ -1437,6 +1443,8 @@ def _live_quote_payload(
                 "put_fwdfct_3060",
                 "fev_30",
                 "iv_slope_3060",
+                "call_slope_3060",
+                "put_slope_3060",
             ],
         )
         summary_payload = dict(option_summary)
@@ -1513,6 +1521,8 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
         "put_fwdfct_3060": forward_factor(put_iv30, put_fwdv),
         "fev_30": fwdv,
         "iv_slope_3060": iv_slope(iv30, iv60, near_dte or 30, far_dte or 60),
+        "call_slope_3060": iv_slope(call_iv30, call_iv60, near_dte or 30, far_dte or 60),
+        "put_slope_3060": iv_slope(put_iv30, put_iv60, near_dte or 30, far_dte or 60),
         "iv_term_structure_source": source,
         "forward_analytics_source": source,
         "iv_slope_3060_source": source,

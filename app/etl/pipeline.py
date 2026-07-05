@@ -285,6 +285,8 @@ class Pipeline:
             "put_fwdfct_3060": forward_metrics["put_fwdfct_3060"],
             "fev_30": fwdv,
             "iv_slope_3060": iv_slope(iv30, iv60, dte30 or 30, dte60 or 60),
+            "call_slope_3060": forward_metrics["call_slope_3060"],
+            "put_slope_3060": forward_metrics["put_slope_3060"],
             "skew_20": skew20,
             "skew_25": skew25,
             "skew_30": skew30,
