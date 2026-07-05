@@ -3,7 +3,12 @@ from __future__ import annotations
 import math
 from datetime import date
 
-from app.etl.pipeline import _expiry_closest_to_target, _monthly_expiry_buckets, _total_option_volume
+from app.etl.pipeline import (
+    _expiry_closest_to_target,
+    _monthly_expiry_buckets,
+    _option_volume_for_expiry,
+    _total_option_volume,
+)
 
 from app.services.calculations import (
     atm_iv,
@@ -93,13 +98,39 @@ def test_closest_target_expiry_helper() -> None:
 
 def test_total_option_volume_sums_calls_and_puts_across_strikes() -> None:
     chain = [
-        {"strike_price": 100, "option_type": "CE", "num_contracts": 10},
-        {"strike_price": 100, "option_type": "PE", "num_contracts": 20},
-        {"strike_price": 110, "option_type": "CE", "num_contracts": 30},
-        {"strike_price": 110, "option_type": "PE", "num_contracts": 40},
-        {"strike_price": 120, "option_type": "CE", "num_contracts": None},
+        {
+            "expiry_date": date(2026, 7, 28),
+            "strike_price": 100,
+            "option_type": "CE",
+            "num_contracts": 10,
+        },
+        {
+            "expiry_date": date(2026, 7, 28),
+            "strike_price": 100,
+            "option_type": "PE",
+            "num_contracts": 20,
+        },
+        {
+            "expiry_date": date(2026, 8, 25),
+            "strike_price": 110,
+            "option_type": "CE",
+            "num_contracts": 30,
+        },
+        {
+            "expiry_date": date(2026, 8, 25),
+            "strike_price": 110,
+            "option_type": "PE",
+            "num_contracts": 40,
+        },
+        {
+            "expiry_date": date(2026, 8, 25),
+            "strike_price": 120,
+            "option_type": "CE",
+            "num_contracts": None,
+        },
     ]
     assert _total_option_volume(chain) == 100
+    assert _option_volume_for_expiry(chain, date(2026, 8, 25)) == 70
 
 
 def test_skew_and_smoothed_skew() -> None:

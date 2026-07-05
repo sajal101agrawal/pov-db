@@ -294,6 +294,7 @@ class Pipeline:
             "iv30_rv30_ratio": ratio(iv30, rv30),
             "iv30_fev30_ratio": ratio(iv30, fwdv),
             "avg_option_volume": _total_option_volume(chain),
+            "option_volume_60d": _option_volume_for_expiry(chain, expiry_60),
             "daily_rsi": price_metrics["daily_rsi"],
             "weekly_rsi": price_metrics["weekly_rsi"],
         }
@@ -381,6 +382,22 @@ def _total_option_volume(chain: list[dict[str, Any]]) -> float | None:
         float(row["num_contracts"])
         for row in chain
         if row.get("option_type") in {"CE", "PE"} and row.get("num_contracts") is not None
+    ]
+    return sum(volumes) if volumes else None
+
+
+def _option_volume_for_expiry(
+    chain: list[dict[str, Any]],
+    expiry: date | None,
+) -> float | None:
+    if expiry is None:
+        return None
+    volumes = [
+        float(row["num_contracts"])
+        for row in chain
+        if row.get("expiry_date") == expiry
+        and row.get("option_type") in {"CE", "PE"}
+        and row.get("num_contracts") is not None
     ]
     return sum(volumes) if volumes else None
 

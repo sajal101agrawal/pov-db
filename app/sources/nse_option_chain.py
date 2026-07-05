@@ -381,6 +381,7 @@ def _combine_expiry_summaries(
             "put_iv": item.get("live_atm_put_iv"),
             "underlying": item.get("live_option_underlying"),
             "strike_count": item.get("live_option_strike_count"),
+            "option_volume": item.get("live_option_volume"),
             "timestamp": item.get("nse_option_chain_timestamp"),
         }
         for item in summaries

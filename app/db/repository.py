@@ -94,6 +94,7 @@ class MarketRepository:
                    sdm.symbol,
                    sdm.trade_date,
                    sdm.avg_option_volume::float,
+                   sdm.option_volume_60d::float,
                    sdm.iv_30::float,
                    sdm.iv_60::float,
                    sdm.iv_90::float,
@@ -1469,7 +1470,8 @@ class MarketRepository:
                    put_slope_3060_percentile::float,
                    vrp_percentile::float, skew_percentile::float, skew_rank,
                    -- Volume
-                   avg_option_volume::float
+                   avg_option_volume::float,
+                   option_volume_60d::float
             FROM symbol_daily_metrics
             WHERE symbol = $1
             ORDER BY trade_date DESC

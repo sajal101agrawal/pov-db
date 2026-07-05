@@ -223,6 +223,7 @@ CREATE TABLE IF NOT EXISTS symbol_daily_metrics (
     iv30_rv30_ratio NUMERIC(18,8),
     iv30_fev30_ratio NUMERIC(18,8),
     avg_option_volume NUMERIC(20,4),
+    option_volume_60d NUMERIC(20,4),
     daily_rsi NUMERIC(8,4),
     weekly_rsi NUMERIC(8,4),
     iv_30_percentile NUMERIC(6,2),
@@ -266,6 +267,7 @@ ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_fwdfct_3060_perce
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_fwdfct_3060_percentile NUMERIC(6,2);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS call_slope_3060_percentile NUMERIC(6,2);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS put_slope_3060_percentile NUMERIC(6,2);
+ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS option_volume_60d NUMERIC(20,4);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_90 NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_10_raw NUMERIC(18,8);
 ALTER TABLE symbol_daily_metrics ADD COLUMN IF NOT EXISTS rv_20_raw NUMERIC(18,8);

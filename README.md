@@ -42,6 +42,9 @@ python scripts/recompute_rsi_metrics.py
 python scripts/recompute_straddle_pnl.py
 ```
 
+`recompute_option_volume.py` refreshes both `avg_option_volume` and `option_volume_60d` from
+raw CE/PE option rows.
+
 Sync NSE corporate actions or preview/execute the all-symbol RV/VRP production remediation:
 
 ```bash

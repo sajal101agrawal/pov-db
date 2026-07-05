@@ -15,6 +15,7 @@ def test_dashboard_live_overlay_allows_scanner_filters_to_use_displayed_values()
         "symbol": "ABC",
         "current_price": 190,
         "avg_option_volume": 5000,
+        "option_volume_60d": 2500,
         "fwdfct_3060": 0.12,
         "iv_slope_3060": 0.02,
     }
@@ -23,6 +24,7 @@ def test_dashboard_live_overlay_allows_scanner_filters_to_use_displayed_values()
             "symbol": "ABC",
             "current_price": 250,
             "avg_option_volume": 7200,
+            "option_volume_60d": 3200,
             "fwdfct_3060": 0.18,
             "iv_slope_3060": -0.01,
         }
@@ -30,6 +32,7 @@ def test_dashboard_live_overlay_allows_scanner_filters_to_use_displayed_values()
     filters = {
         "current_price": {"min": 200},
         "avg_option_volume": {"min": 7000},
+        "option_volume_60d": {"min": 3000},
         "fwdfct_3060": {"min": 0.16},
         "iv_slope_3060": {"max": 0.000001},
     }

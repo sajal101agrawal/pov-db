@@ -1428,6 +1428,7 @@ def _live_quote_payload(
             base,
             [
                 "avg_option_volume",
+                "option_volume_60d",
                 "iv_30",
                 "iv_60",
                 "iv_90",
@@ -1461,6 +1462,8 @@ def _live_quote_payload(
 
     if base.get("avg_option_volume") is not None:
         payload.setdefault("avg_option_volume_kind", "eod_total_contracts_all_strikes")
+    if base.get("option_volume_60d") is not None:
+        payload.setdefault("option_volume_60d_source", "symbol_daily_metrics")
     for key in (
         "iv_30", "iv_60", "iv_90",
         "call_iv_30", "call_iv_60", "call_iv_90",
@@ -1500,6 +1503,7 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
     put_iv30 = _expiry_bucket_from_terms(terms, 0, "put_iv")
     put_iv60 = _expiry_bucket_from_terms(terms, 1, "put_iv")
     put_iv90 = _expiry_bucket_from_terms(terms, 2, "put_iv")
+    option_volume_60d = _expiry_bucket_from_terms(terms, 1, "option_volume")
     near_dte = _expiry_bucket_dte(terms, 0)
     far_dte = _expiry_bucket_dte(terms, 1)
     fwdv = forward_volatility(iv30, iv60, near_dte or 30, far_dte or 60)
@@ -1515,6 +1519,7 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
         "put_iv_30": put_iv30,
         "put_iv_60": put_iv60,
         "put_iv_90": put_iv90,
+        "option_volume_60d": option_volume_60d,
         "fwdv_3060": fwdv,
         "fwdfct_3060": forward_factor(iv30, fwdv),
         "call_fwdfct_3060": forward_factor(call_iv30, call_fwdv),
@@ -1567,6 +1572,8 @@ def _live_forward_metrics(option_summary: dict[str, Any], trade_date: date) -> d
     ):
         if metrics.get(key) is not None:
             metrics[f"{key}_source"] = source
+    if metrics.get("option_volume_60d") is not None:
+        metrics["option_volume_60d_source"] = source
 
     for index, tenor in enumerate((30, 60, 90)):
         if index < len(terms):
@@ -1583,6 +1590,11 @@ def _live_iv_terms(option_summary: dict[str, Any], trade_date: date) -> list[dic
             "atm_iv": option_summary.get("live_atm_iv"),
             "call_iv": option_summary.get("live_atm_call_iv"),
             "put_iv": option_summary.get("live_atm_put_iv"),
+            "option_volume": (
+                option_summary.get("live_atm_option_volume")
+                if option_summary.get("live_atm_option_volume") is not None
+                else option_summary.get("live_option_volume")
+            ),
         }
     ]
     terms = []
@@ -1609,6 +1621,7 @@ def _live_iv_terms(option_summary: dict[str, Any], trade_date: date) -> list[dic
                 "iv": atm_iv_value,
                 "call_iv": call_iv_value,
                 "put_iv": put_iv_value,
+                "option_volume": _coerce_float(item.get("option_volume")),
             }
         )
     return sorted(terms, key=lambda item: (item["dte"], item["expiry_date"]))

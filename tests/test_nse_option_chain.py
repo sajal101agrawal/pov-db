@@ -95,9 +95,27 @@ def test_normalize_option_chain_payload_matches_live_chain_shape() -> None:
 def test_live_forward_metrics_use_live_term_structure() -> None:
     summary = {
         "live_iv_terms": [
-            {"expiry_date": date(2026, 6, 27), "atm_iv": 0.20, "call_iv": 0.22, "put_iv": 0.18},
-            {"expiry_date": date(2026, 7, 27), "atm_iv": 0.25, "call_iv": 0.26, "put_iv": 0.24},
-            {"expiry_date": date(2026, 8, 26), "atm_iv": 0.30, "call_iv": 0.31, "put_iv": 0.29},
+            {
+                "expiry_date": date(2026, 6, 27),
+                "atm_iv": 0.20,
+                "call_iv": 0.22,
+                "put_iv": 0.18,
+                "option_volume": 100,
+            },
+            {
+                "expiry_date": date(2026, 7, 27),
+                "atm_iv": 0.25,
+                "call_iv": 0.26,
+                "put_iv": 0.24,
+                "option_volume": 3200,
+            },
+            {
+                "expiry_date": date(2026, 8, 26),
+                "atm_iv": 0.30,
+                "call_iv": 0.31,
+                "put_iv": 0.29,
+                "option_volume": 900,
+            },
         ]
     }
 
@@ -114,6 +132,8 @@ def test_live_forward_metrics_use_live_term_structure() -> None:
     assert math.isclose(metrics["call_fwdfct_3060"], 0.22 / expected_call_fwdv - 1.0)
     assert math.isclose(metrics["put_fwdfct_3060"], 0.18 / expected_put_fwdv - 1.0)
     assert math.isclose(metrics["iv_slope_3060"], (0.25 - 0.20) / 30)
+    assert metrics["option_volume_60d"] == 3200
+    assert metrics["option_volume_60d_source"] == "nse:option-chain-v3"
     assert metrics["iv_term_structure_source"] == "nse:option-chain-v3"
 
 

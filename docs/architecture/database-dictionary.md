@@ -118,6 +118,8 @@ Important columns:
 - `skew_20/25/30`: put IV minus call IV at the closest target deltas.
 - `avg_option_volume`: total traded option contracts for the symbol/date, summed across all
   CE and PE contracts in `options_historical`.
+- `option_volume_60d`: total traded CE and PE contracts for the symbol/date where
+  `options_historical.expiry_date = symbol_daily_metrics.expiry_60d`.
 - `daily_rsi/weekly_rsi`: RSI on `0..100`.
 - Percentile fields: `0..100`.
 

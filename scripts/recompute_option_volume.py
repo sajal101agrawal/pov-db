@@ -14,7 +14,9 @@ from app.db.repository import MarketRepository
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Recompute symbol_daily_metrics.avg_option_volume from all CE/PE contracts."
+        description=(
+            "Recompute option volume metrics from CE/PE contracts, including 60-DTE expiry volume."
+        )
     )
     parser.add_argument("--start", help="Optional start date YYYY-MM-DD.")
     parser.add_argument("--end", help="Optional end date YYYY-MM-DD.")
@@ -54,7 +56,37 @@ async def main() -> None:
             """,
             *params,
         )
-        print({"event": "option_volume_recomputed", "updated": int(result.split()[-1])}, flush=True)
+        second_result = await repo.pool.execute(
+            f"""
+            WITH option_volume_60d AS (
+                SELECT sdm.symbol,
+                       sdm.trade_date,
+                       SUM(oh.num_contracts)::numeric AS total_contracts
+                FROM symbol_daily_metrics sdm
+                JOIN options_historical oh
+                  ON oh.symbol = sdm.symbol
+                 AND oh.trade_date = sdm.trade_date
+                 AND oh.expiry_date = sdm.expiry_60d
+                WHERE {where_clause}
+                GROUP BY sdm.symbol, sdm.trade_date
+            )
+            UPDATE symbol_daily_metrics sdm
+            SET option_volume_60d = option_volume_60d.total_contracts,
+                updated_at = NOW()
+            FROM option_volume_60d
+            WHERE sdm.symbol = option_volume_60d.symbol
+              AND sdm.trade_date = option_volume_60d.trade_date
+            """,
+            *params,
+        )
+        print(
+            {
+                "event": "option_volume_recomputed",
+                "avg_option_volume_updated": int(result.split()[-1]),
+                "option_volume_60d_updated": int(second_result.split()[-1]),
+            },
+            flush=True,
+        )
     finally:
         await close_pool()
 

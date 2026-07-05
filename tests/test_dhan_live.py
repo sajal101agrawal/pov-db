@@ -195,6 +195,8 @@ def test_detail_history_overlay_appends_latest_live_row() -> None:
         "expiry_30d": "2026-06-30",
         "avg_option_volume": 12345,
         "avg_option_volume_source": "kite:quote",
+        "option_volume_60d": 3456,
+        "option_volume_60d_source": "dhan:optionchain",
         "live_atm_strike": 1000,
         "live_iv_term_structure": [{"tenor": 30, "iv": 0.20}],
         "iv_term_structure_source": "dhan:optionchain",
@@ -213,6 +215,8 @@ def test_detail_history_overlay_appends_latest_live_row() -> None:
     assert overlaid[-1]["expiry_30d"] == "2026-06-30"
     assert overlaid[-1]["avg_option_volume"] == 12345
     assert overlaid[-1]["avg_option_volume_source"] == "kite:quote"
+    assert overlaid[-1]["option_volume_60d"] == 3456
+    assert overlaid[-1]["option_volume_60d_source"] == "dhan:optionchain"
     assert overlaid[-1]["live_atm_strike"] == 1000
     assert overlaid[-1]["live_iv_term_structure"] == [{"tenor": 30, "iv": 0.20}]
     assert history == [{"trade_date": "2026-05-28", "iv_30": 0.18}]
