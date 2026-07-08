@@ -1183,16 +1183,13 @@ def _kite_instrument_key(row: dict[str, Any] | None) -> str | None:
     return f"NFO:{tradingsymbol}" if tradingsymbol else None
 
 
-def _kite_contract_volume(quote: dict[str, Any] | None, row: dict[str, Any] | None) -> int | None:
+def _kite_quote_volume(quote: dict[str, Any] | None) -> int | None:
     if not quote:
         return None
     volume = _coerce_int(quote.get("volume"))
     if volume is None:
         return None
-    lot_size = _coerce_int((row or {}).get("lot_size"))
-    if lot_size is None or lot_size <= 0:
-        return volume
-    return int(volume / lot_size)
+    return volume
 
 
 def _kite_option_summary_from_quotes(
@@ -1212,8 +1209,8 @@ def _kite_option_summary_from_quotes(
     call_iv = _kite_leg_iv(ce_quote, spot, strike, expiry, trade_date, risk_free_rate, "CE")
     put_iv = _kite_leg_iv(pe_quote, spot, strike, expiry, trade_date, risk_free_rate, "PE")
     atm_iv = _average_available([call_iv, put_iv])
-    call_volume = _kite_contract_volume(ce_quote, request.get("ce_row"))
-    put_volume = _kite_contract_volume(pe_quote, request.get("pe_row"))
+    call_volume = _kite_quote_volume(ce_quote)
+    put_volume = _kite_quote_volume(pe_quote)
     volumes = [volume for volume in (call_volume, put_volume) if volume is not None and volume > 0]
     atm_volume = sum(volumes) if volumes else None
     if atm_iv is None and atm_volume is None:
@@ -1223,7 +1220,7 @@ def _kite_option_summary_from_quotes(
         "provider": "kite",
         "live_option_volume": atm_volume,
         "live_option_volume_source": "kite:quote",
-        "live_option_volume_kind": "atm_contracts_call_plus_put",
+        "live_option_volume_kind": "atm_quote_volume_call_plus_put",
         "live_option_expiry": expiry.isoformat(),
         "live_option_expiry_date": expiry,
         "live_option_strike_count": request["strike_count"],

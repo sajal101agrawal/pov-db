@@ -67,7 +67,7 @@ def test_kite_option_summary_calculates_call_put_iv_from_quote_prices() -> None:
     assert summary is not None
     assert summary["provider"] == "kite"
     assert summary["live_option_volume"] == 30
-    assert summary["live_option_volume_kind"] == "atm_contracts_call_plus_put"
+    assert summary["live_option_volume_kind"] == "atm_quote_volume_call_plus_put"
     assert summary["live_atm_strike"] == 100.0
     assert math.isclose(summary["live_atm_call_iv"], 0.25, rel_tol=1e-5)
     assert math.isclose(summary["live_atm_put_iv"], 0.20, rel_tol=1e-5)
@@ -75,7 +75,7 @@ def test_kite_option_summary_calculates_call_put_iv_from_quote_prices() -> None:
     assert summary["live_atm_iv_source"] == "kite:quote:calculated-iv"
 
 
-def test_kite_option_summary_normalizes_quote_volume_by_lot_size() -> None:
+def test_kite_option_summary_preserves_quote_volume_without_lot_size_division() -> None:
     trade_date = date(2026, 6, 1)
     expiry = trade_date + timedelta(days=30)
     spot = 100.0
@@ -104,9 +104,9 @@ def test_kite_option_summary_normalizes_quote_volume_by_lot_size() -> None:
     summary = live_service._kite_option_summary_from_quotes(request, quotes, trade_date, rate)
 
     assert summary is not None
-    assert summary["live_atm_call_volume"] == 5
-    assert summary["live_atm_put_volume"] == 10
-    assert summary["live_atm_option_volume"] == 15
+    assert summary["live_atm_call_volume"] == 1500
+    assert summary["live_atm_put_volume"] == 3000
+    assert summary["live_atm_option_volume"] == 4500
 
 
 def test_kite_option_summary_prefers_bid_ask_mid_over_ltp_for_iv() -> None:
@@ -273,7 +273,7 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
         "provider": "kite",
         "live_option_volume": 30,
         "live_option_volume_source": "kite:quote",
-        "live_option_volume_kind": "atm_contracts_call_plus_put",
+        "live_option_volume_kind": "atm_quote_volume_call_plus_put",
         "live_atm_iv_source": "kite:quote:calculated-iv",
         "live_iv_terms": [
             {"expiry_date": date(2026, 7, 25), "call_iv": 0.20, "put_iv": 0.22},
