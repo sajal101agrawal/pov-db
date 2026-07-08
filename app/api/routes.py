@@ -2412,6 +2412,16 @@ async def live_symbols(
             )
             for item in payload
         ]
+    latest_metrics = list((await repo.latest_live_metrics()).values())
+    if latest_metrics:
+        return [
+            await _refresh_live_payload_forward_percentiles(
+                str(item.get("symbol") or ""),
+                item,
+                repo,
+            )
+            for item in latest_metrics
+        ]
     await fetch_and_store_live_quotes(settings, repo, cache_service.redis)
     payload = await cache_service.get_live_symbols()
     if payload:
@@ -2423,14 +2433,7 @@ async def live_symbols(
             )
             for item in payload
         ]
-    return [
-        await _refresh_live_payload_forward_percentiles(
-            str(item.get("symbol") or ""),
-            item,
-            repo,
-        )
-        for item in (await repo.latest_live_metrics()).values()
-    ]
+    return []
 
 
 @router.get("/live/{symbol}/option-chain")

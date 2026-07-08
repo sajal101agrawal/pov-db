@@ -361,7 +361,8 @@ async def _fetch_and_store_dhan_live_quotes(
     await _apply_live_forward_factor_percentiles(repo, payloads)
     for payload in payloads:
         await cache.set_live(payload["symbol"], payload, ttl=ttl)
-    await cache.set_live_symbols(payloads, ttl=ttl)
+    if symbols is None:
+        await cache.set_live_symbols(payloads, ttl=ttl)
     await repo.upsert_live_symbol_metrics(payloads)
     return {
         "symbols_requested": len(selected),
@@ -413,7 +414,8 @@ async def _fetch_and_store_kite_live_quotes(
     await _apply_live_forward_factor_percentiles(repo, payloads)
     for payload in payloads:
         await cache.set_live(payload["symbol"], payload, ttl=ttl)
-    await cache.set_live_symbols(payloads, ttl=ttl)
+    if symbols is None:
+        await cache.set_live_symbols(payloads, ttl=ttl)
     await repo.upsert_live_symbol_metrics(payloads)
     return {
         "symbols_requested": len(selected),
@@ -457,7 +459,8 @@ async def _fetch_and_store_yahoo_live_quotes(
     await _apply_live_forward_factor_percentiles(repo, payloads)
     for payload in payloads:
         await cache.set_live(payload["symbol"], payload, ttl=ttl)
-    await cache.set_live_symbols(payloads, ttl=ttl)
+    if symbols is None:
+        await cache.set_live_symbols(payloads, ttl=ttl)
     await repo.upsert_live_symbol_metrics(payloads)
     return {
         "symbols_requested": len(selected),
