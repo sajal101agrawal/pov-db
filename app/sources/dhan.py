@@ -293,7 +293,7 @@ def combine_expiry_summaries(
             "strike_count": item.get("live_option_strike_count"),
             "call_volume": item.get("live_atm_call_volume"),
             "put_volume": item.get("live_atm_put_volume"),
-            "option_volume": item.get("live_atm_option_volume"),
+            "option_volume": item.get("live_option_volume"),
         }
         for item in summaries
     ]

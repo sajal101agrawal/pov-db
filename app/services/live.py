@@ -788,7 +788,7 @@ async def _fetch_kite_live_option_summaries(
         {
             key
             for request in requests
-            for key in (request.get("ce_key"), request.get("pe_key"))
+            for key in (request.get("quote_keys") or [request.get("ce_key"), request.get("pe_key")])
             if key
         }
     )
@@ -1161,6 +1161,11 @@ def _kite_atm_option_request(
         "pe_row": pe,
         "ce_key": _kite_instrument_key(ce) if ce else None,
         "pe_key": _kite_instrument_key(pe) if pe else None,
+        "quote_keys": [
+            key
+            for key in (_kite_instrument_key(row) for row in expiry_rows)
+            if key
+        ],
     }
 
 
@@ -1192,6 +1197,21 @@ def _kite_quote_volume(quote: dict[str, Any] | None) -> int | None:
     return volume
 
 
+def _kite_total_quote_volume(
+    data: dict[str, Any],
+    quote_keys: list[str],
+) -> int | None:
+    total = 0
+    volume_count = 0
+    for key in dict.fromkeys(quote_keys):
+        volume = _kite_quote_volume(data.get(key))
+        if volume is None or volume <= 0:
+            continue
+        total += volume
+        volume_count += 1
+    return total if volume_count else None
+
+
 def _kite_option_summary_from_quotes(
     request: dict[str, Any],
     option_quotes: dict[str, Any],
@@ -1213,14 +1233,18 @@ def _kite_option_summary_from_quotes(
     put_volume = _kite_quote_volume(pe_quote)
     volumes = [volume for volume in (call_volume, put_volume) if volume is not None and volume > 0]
     atm_volume = sum(volumes) if volumes else None
-    if atm_iv is None and atm_volume is None:
+    total_volume = _kite_total_quote_volume(
+        data,
+        request.get("quote_keys") or [request.get("ce_key"), request.get("pe_key")],
+    )
+    if atm_iv is None and total_volume is None:
         return None
     return {
         "symbol": request["symbol"],
         "provider": "kite",
-        "live_option_volume": atm_volume,
+        "live_option_volume": total_volume,
         "live_option_volume_source": "kite:quote",
-        "live_option_volume_kind": "atm_quote_volume_call_plus_put",
+        "live_option_volume_kind": "total_quote_volume_all_strikes",
         "live_option_expiry": expiry.isoformat(),
         "live_option_expiry_date": expiry,
         "live_option_strike_count": request["strike_count"],
@@ -1604,11 +1628,7 @@ def _live_iv_terms(option_summary: dict[str, Any], trade_date: date) -> list[dic
             "atm_iv": option_summary.get("live_atm_iv"),
             "call_iv": option_summary.get("live_atm_call_iv"),
             "put_iv": option_summary.get("live_atm_put_iv"),
-            "option_volume": (
-                option_summary.get("live_atm_option_volume")
-                if option_summary.get("live_atm_option_volume") is not None
-                else option_summary.get("live_option_volume")
-            ),
+            "option_volume": option_summary.get("live_option_volume"),
         }
     ]
     terms = []
