@@ -153,6 +153,7 @@ async def system_health(
             **current_sources,
             "nse_proxy_configured": bool(settings.nse_proxy_url),
             "s3_dump_configured": bool(settings.s3_dump_bucket),
+            "s3_dump_enabled": settings.s3_dump_enabled,
             "live_symbols": settings.live_symbols,
             "live_cache_ttl_seconds": settings.live_cache_ttl_seconds,
             "live_poll_interval_seconds": settings.live_poll_interval_seconds,
@@ -270,7 +271,18 @@ async def _check_s3(settings: Settings) -> dict[str, Any]:
         return {
             "status": "disabled",
             "configured": False,
+            "dump_enabled": settings.s3_dump_enabled,
             "message": "S3_DUMP_BUCKET not set",
+        }
+    if not settings.s3_dump_enabled:
+        return {
+            "status": "disabled",
+            "configured": True,
+            "dump_enabled": False,
+            "bucket": settings.s3_dump_bucket,
+            "prefix": settings.s3_dump_prefix,
+            "region": settings.aws_region,
+            "message": "S3_DUMP_ENABLED is false",
         }
     return await asyncio.to_thread(_check_s3_sync, settings)
 
@@ -290,6 +302,7 @@ def _check_s3_sync(settings: Settings) -> dict[str, Any]:
     return {
         "status": "ok",
         "configured": True,
+        "dump_enabled": settings.s3_dump_enabled,
         "bucket": settings.s3_dump_bucket,
         "prefix": settings.s3_dump_prefix,
         "region": settings.aws_region,

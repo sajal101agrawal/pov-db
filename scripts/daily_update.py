@@ -21,11 +21,64 @@ from app.sources.nse_metadata import NSEMetadataClient
 from app.sources.rates import IndiaRiskFreeRateClient
 
 
+async def _safe_log_error(
+    repo: MarketRepository,
+    task_name: str,
+    error_type: str,
+    error_details: dict,
+    *,
+    symbol: str | None = None,
+    trade_date: date | None = None,
+    source: str | None = None,
+) -> int | dict:
+    try:
+        return await repo.log_error(
+            task_name,
+            error_type,
+            error_details,
+            symbol=symbol,
+            trade_date=trade_date,
+            source=source,
+        )
+    except Exception as exc:  # noqa: BLE001 - keep original job result visible during DB recovery
+        return {
+            "log_failed": True,
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+        }
+
+
+async def _upload_etl_dump_safely(
+    repo: MarketRepository,
+    settings,
+    trade_date: date,
+) -> dict:
+    try:
+        return await asyncio.to_thread(upload_etl_dump, settings, trade_date)
+    except Exception as exc:  # noqa: BLE001 - S3 dump must not mark market-data ETL failed
+        error_id = await _safe_log_error(
+            repo,
+            "daily_update_s3_dump",
+            type(exc).__name__,
+            {"message": str(exc), "repr": repr(exc)},
+            trade_date=trade_date,
+            source="s3_dump",
+        )
+        return {
+            "status": "fail",
+            "skipped": False,
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+            "error_id": error_id,
+        }
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Run the daily EOD update after NSE bhavcopy is available.")
     parser.add_argument("--date", default=date.today().isoformat(), help="Trade date YYYY-MM-DD.")
     parser.add_argument("--symbols", help="Optional comma-separated symbols. Omit for all F&O symbols.")
     parser.add_argument("--skip-events", action="store_true")
+    parser.add_argument("--skip-s3-dump", action="store_true")
     args = parser.parse_args()
 
     trade_date = date.fromisoformat(args.date)
@@ -47,7 +100,8 @@ async def main() -> None:
             strict_corporate_actions=False,
         )
         if result.get("corporate_action_sync_error"):
-            result["corporate_action_sync_error_id"] = await repo.log_error(
+            result["corporate_action_sync_error_id"] = await _safe_log_error(
+                repo,
                 "daily_update_corporate_actions",
                 result["corporate_action_sync_error"].get("type", "Error"),
                 {**result["corporate_action_sync_error"], "symbols": symbols},
@@ -80,7 +134,8 @@ async def main() -> None:
             ).fetch_metadata(set(active_symbols), enrich_quote=False)
             metadata_count = await repo.upsert_symbol_metadata(metadata)
         except Exception as exc:  # noqa: BLE001 - metadata refresh must not block EOD load
-            metadata_error_id = await repo.log_error(
+            metadata_error_id = await _safe_log_error(
+                repo,
                 "daily_update_metadata",
                 type(exc).__name__,
                 {"message": str(exc), "repr": repr(exc), "symbols": active_symbols},
@@ -105,7 +160,8 @@ async def main() -> None:
                 ).fetch_result_events(event_symbols)
             except Exception as exc:  # noqa: BLE001 - event refresh must not block EOD load
                 event_errors.append(
-                    await repo.log_error(
+                    await _safe_log_error(
+                        repo,
                         "daily_update_events",
                         type(exc).__name__,
                         {"message": str(exc), "repr": repr(exc), "provider": "nse", "symbols": event_symbols},
@@ -128,7 +184,8 @@ async def main() -> None:
                 )
             except Exception as exc:  # noqa: BLE001 - event refresh must not block EOD load
                 event_errors.append(
-                    await repo.log_error(
+                    await _safe_log_error(
+                        repo,
                         "daily_update_events",
                         type(exc).__name__,
                         {"message": str(exc), "repr": repr(exc), "provider": "yahoo", "symbols": event_symbols},
@@ -139,7 +196,12 @@ async def main() -> None:
             if nse_events or yahoo_events:
                 events_count = await repo.upsert_events([*nse_events, *yahoo_events])
 
-        dump_result = await asyncio.to_thread(upload_etl_dump, settings, trade_date)
+        if args.skip_s3_dump:
+            dump_result = {"skipped": True, "reason": "--skip-s3-dump"}
+        elif not settings.s3_dump_enabled:
+            dump_result = {"skipped": True, "reason": "S3_DUMP_ENABLED is false"}
+        else:
+            dump_result = await _upload_etl_dump_safely(repo, settings, trade_date)
 
         print(
             json.dumps(
@@ -158,7 +220,8 @@ async def main() -> None:
             )
         )
     except Exception as exc:
-        await repo.log_error(
+        await _safe_log_error(
+            repo,
             "daily_update",
             type(exc).__name__,
             {"message": str(exc), "repr": repr(exc), "symbols": symbols},

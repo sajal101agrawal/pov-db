@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     aws_region: str = "ap-south-1"
     s3_dump_bucket: str | None = None
     s3_dump_prefix: str = "etl-dumps/"
+    s3_dump_enabled: bool = True
     dhan_client_id: str | None = None
     dhan_access_token: str | None = None
     dhan_pin: str | None = None
