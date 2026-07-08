@@ -75,6 +75,40 @@ def test_kite_option_summary_calculates_call_put_iv_from_quote_prices() -> None:
     assert summary["live_atm_iv_source"] == "kite:quote:calculated-iv"
 
 
+def test_kite_option_summary_normalizes_quote_volume_by_lot_size() -> None:
+    trade_date = date(2026, 6, 1)
+    expiry = trade_date + timedelta(days=30)
+    spot = 100.0
+    strike = 100.0
+    rate = 0.06
+    call_price = black_scholes_price(spot, strike, 30 / 365, rate, 0.25, "CE")
+    put_price = black_scholes_price(spot, strike, 30 / 365, rate, 0.20, "PE")
+    request = {
+        "symbol": "ABC",
+        "spot": spot,
+        "expiry": expiry,
+        "strike": strike,
+        "strike_count": 3,
+        "ce_key": "NFO:ABC26JUN100CE",
+        "pe_key": "NFO:ABC26JUN100PE",
+        "ce_row": {"lot_size": 300},
+        "pe_row": {"lot_size": 300},
+    }
+    quotes = {
+        "data": {
+            "NFO:ABC26JUN100CE": _quote(call_price, 1500),
+            "NFO:ABC26JUN100PE": _quote(put_price, 3000),
+        }
+    }
+
+    summary = live_service._kite_option_summary_from_quotes(request, quotes, trade_date, rate)
+
+    assert summary is not None
+    assert summary["live_atm_call_volume"] == 5
+    assert summary["live_atm_put_volume"] == 10
+    assert summary["live_atm_option_volume"] == 15
+
+
 def test_kite_option_summary_prefers_bid_ask_mid_over_ltp_for_iv() -> None:
     trade_date = date(2026, 6, 1)
     expiry = trade_date + timedelta(days=30)
