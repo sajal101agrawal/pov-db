@@ -14,7 +14,6 @@ from app.db.pool import close_pool, get_pool
 from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
 from app.services.factory import build_bhavcopy_source, build_corporate_actions_source
-from app.sources.nse import NSEArchiveClient
 from app.sources.nse_events import NSECorporateEventsClient
 from app.sources.yahoo_events import YahooEarningsCalendarClient
 from app.sources.nse_metadata import NSEMetadataClient
@@ -76,12 +75,7 @@ async def populate_calendar(repo: MarketRepository, start: date, end: date) -> d
 
 async def refresh_universe(repo: MarketRepository, trade_date: date, enrich_quote: bool) -> dict:
     settings = get_settings()
-    fo_rows = await NSEArchiveClient(
-        settings.nse_request_delay_seconds,
-        settings.source_retry_attempts,
-        settings.source_retry_base_delay_seconds,
-        settings.source_retry_max_delay_seconds,
-    ).fetch_fo(trade_date)
+    fo_rows = await build_bhavcopy_source(settings).fetch_fo(trade_date)
     symbols: dict[str, str] = {}
     for row in fo_rows:
         symbols[row.symbol] = "index" if row.instrument_type == "OPTIDX" else "individual_securities"

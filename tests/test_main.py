@@ -1,7 +1,14 @@
 import asyncio
+from datetime import date
 
 import app.api.routes as routes
-from app.api.routes import _mask_value, _overall_health_status, _provider_roles
+from app.api.routes import (
+    _check_eod_bhavcopy_status,
+    _default_bhavcopy_probe_date,
+    _mask_value,
+    _overall_health_status,
+    _provider_roles,
+)
 from app.core.config import Settings
 from app.main import redact_query
 
@@ -73,6 +80,12 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
     async def nse(settings, symbol):
         return {"status": "ok", "active_for": ["option_chain"]}
 
+    async def samco_bhavcopy(settings, trade_date):
+        return {"status": "ok", "trade_date": trade_date.isoformat()}
+
+    async def nse_bhavcopy(settings, trade_date):
+        return {"status": "ok", "trade_date": trade_date.isoformat()}
+
     async def yahoo(repo, settings, symbol):
         return {"status": "ok", "active_for": []}
 
@@ -86,6 +99,8 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
     monkeypatch.setattr(routes, "_check_redis", redis)
     monkeypatch.setattr(routes, "_check_kite", kite)
     monkeypatch.setattr(routes, "_check_nse_option_chain", nse)
+    monkeypatch.setattr(routes, "_check_samco_bhavcopy", samco_bhavcopy)
+    monkeypatch.setattr(routes, "_check_nse_bhavcopy", nse_bhavcopy)
     monkeypatch.setattr(routes, "_check_yahoo", yahoo)
     monkeypatch.setattr(routes, "_check_dhan", dhan)
     monkeypatch.setattr(routes, "_check_live_state", live_state)
@@ -100,6 +115,7 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
         routes.system_health(
             request=FakeRequest("application/json"),
             symbol="maruti",
+            bhavcopy_date=None,
             view_format="json",
             settings=settings,
             repo=object(),  # type: ignore[arg-type]
@@ -117,6 +133,9 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
     }
     assert result["checks"]["kite"]["required"] is True
     assert result["checks"]["yahoo"]["required"] is False
+    assert result["checks"]["samco_bhavcopy"]["status"] == "ok"
+    assert result["checks"]["nse_bhavcopy"]["status"] == "ok"
+    assert result["checks"]["eod_bhavcopy"]["status"] == "ok"
 
 
 def test_system_health_can_render_browser_html(monkeypatch) -> None:
@@ -127,6 +146,8 @@ def test_system_health_can_render_browser_html(monkeypatch) -> None:
     monkeypatch.setattr(routes, "_check_redis", ok)
     monkeypatch.setattr(routes, "_check_kite", ok)
     monkeypatch.setattr(routes, "_check_nse_option_chain", ok)
+    monkeypatch.setattr(routes, "_check_samco_bhavcopy", ok)
+    monkeypatch.setattr(routes, "_check_nse_bhavcopy", ok)
     monkeypatch.setattr(routes, "_check_yahoo", ok)
     monkeypatch.setattr(routes, "_check_dhan", ok)
     monkeypatch.setattr(routes, "_check_live_state", ok)
@@ -135,6 +156,7 @@ def test_system_health_can_render_browser_html(monkeypatch) -> None:
         routes.system_health(
             request=FakeRequest("text/html,application/xhtml+xml"),
             symbol="reliance",
+            bhavcopy_date=None,
             view_format="auto",
             settings=Settings(),
             repo=object(),  # type: ignore[arg-type]
@@ -147,3 +169,21 @@ def test_system_health_can_render_browser_html(monkeypatch) -> None:
     assert "System Health" in body
     assert "RELIANCE" in body
     assert "Raw JSON" in body
+
+
+def test_system_health_eod_bhavcopy_status_requires_one_provider() -> None:
+    checks = {
+        "samco_bhavcopy": {"status": "fail"},
+        "nse_bhavcopy": {"status": "ok"},
+    }
+
+    result = _check_eod_bhavcopy_status(checks, date(2026, 7, 7))
+
+    assert result["status"] == "warn"
+    assert result["required"] is True
+    assert result["usable_providers"] == ["nse"]
+
+
+def test_default_bhavcopy_probe_date_skips_weekends() -> None:
+    assert _default_bhavcopy_probe_date(date(2026, 7, 8)) == date(2026, 7, 7)
+    assert _default_bhavcopy_probe_date(date(2026, 7, 6)) == date(2026, 7, 3)

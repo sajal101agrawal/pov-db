@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+from html import unescape
+from html.parser import HTMLParser
+from urllib.parse import urljoin
 from zipfile import BadZipFile
 
 import httpx
@@ -34,7 +37,7 @@ class SamcoBhavcopyClient:
         self.retry_base_delay_seconds = retry_base_delay_seconds
         self.retry_max_delay_seconds = retry_max_delay_seconds
 
-    async def _fetch_zip(self, trade_date: date, segment: str) -> bytes:
+    async def _fetch_csv_text(self, trade_date: date, segment: str) -> str:
         data = {
             "start_date": trade_date.isoformat(),
             "end_date": trade_date.isoformat(),
@@ -49,20 +52,70 @@ class SamcoBhavcopyClient:
                 max_delay_seconds=self.retry_max_delay_seconds,
             )
             response.raise_for_status()
-            return response.content
+            csv_text = _csv_text_from_content(response.content)
+            if csv_text is not None:
+                return csv_text
+
+            download_url = _extract_download_url(response.text, str(response.url))
+            if not download_url:
+                snippet = response.text.strip().replace("\n", " ")[:300]
+                raise RuntimeError(
+                    f"Samco did not return a CSV, zip, or download link for {segment} "
+                    f"bhavcopy: {snippet}"
+                )
+
+            download = await retry_async(
+                lambda: client.get(download_url),
+                attempts=self.retry_attempts,
+                base_delay_seconds=self.retry_base_delay_seconds,
+                max_delay_seconds=self.retry_max_delay_seconds,
+            )
+            download.raise_for_status()
+            csv_text = _csv_text_from_content(download.content)
+            if csv_text is None:
+                snippet = download.text.strip().replace("\n", " ")[:300]
+                raise RuntimeError(
+                    f"Samco download did not return a CSV or zip for {segment} bhavcopy: {snippet}"
+                )
+            return csv_text
 
     async def fetch_fo(self, trade_date: date):
-        content = await self._fetch_zip(trade_date, "NSEFO")
-        try:
-            csv_text = unzip_first_csv(content)
-        except BadZipFile as exc:
-            raise RuntimeError("Samco did not return a zip for NSEFO bhavcopy") from exc
+        csv_text = await self._fetch_csv_text(trade_date, "NSEFO")
         return parse_fo_bhavcopy(csv_text, trade_date, source="samco:NSEFO")
 
     async def fetch_cm(self, trade_date: date):
-        content = await self._fetch_zip(trade_date, "NSE")
-        try:
-            csv_text = unzip_first_csv(content)
-        except BadZipFile as exc:
-            raise RuntimeError("Samco did not return a zip for NSE bhavcopy") from exc
+        csv_text = await self._fetch_csv_text(trade_date, "NSE")
         return parse_cm_bhavcopy(csv_text, trade_date, source="samco:NSE")
+
+
+class _FirstLinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.href: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.href is not None or tag.lower() != "a":
+            return
+        for name, value in attrs:
+            if name.lower() == "href" and value:
+                self.href = unescape(value)
+                return
+
+
+def _csv_text_from_content(content: bytes) -> str | None:
+    if content.startswith(b"PK"):
+        try:
+            return unzip_first_csv(content)
+        except BadZipFile:
+            return None
+    text = content.decode("utf-8-sig", errors="replace")
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if first_line.startswith("<") or "," not in first_line:
+        return None
+    return text
+
+
+def _extract_download_url(html: str, base_url: str = SAMCO_URL) -> str | None:
+    parser = _FirstLinkParser()
+    parser.feed(html)
+    return urljoin(base_url, parser.href) if parser.href else None

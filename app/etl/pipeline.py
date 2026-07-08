@@ -49,20 +49,36 @@ class Pipeline:
         symbols: list[str] | None = None,
         finalize: bool = True,
         sync_corporate_actions: bool = True,
+        strict_corporate_actions: bool = True,
     ) -> dict[str, Any]:
         action_sync_start = trade_date - timedelta(days=180)
         action_sync_end = trade_date + timedelta(days=45)
-        action_task = (
-            self.corporate_actions_source.fetch_actions(
-                action_sync_start, action_sync_end, symbols
-            )
-            if sync_corporate_actions and self.corporate_actions_source is not None
-            else asyncio.sleep(0, result=[])
-        )
+        corporate_action_sync_error: dict[str, Any] | None = None
+
+        async def fetch_corporate_actions() -> list[dict[str, Any]]:
+            nonlocal corporate_action_sync_error
+            if not sync_corporate_actions or self.corporate_actions_source is None:
+                return []
+            try:
+                return await self.corporate_actions_source.fetch_actions(
+                    action_sync_start, action_sync_end, symbols
+                )
+            except Exception as exc:
+                if strict_corporate_actions:
+                    raise
+                corporate_action_sync_error = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "repr": repr(exc),
+                    "start": action_sync_start.isoformat(),
+                    "end": action_sync_end.isoformat(),
+                }
+                return []
+
         fo_rows, cm_rows, corporate_actions = await asyncio.gather(
             self.bhavcopy_source.fetch_fo(trade_date),
             self.bhavcopy_source.fetch_cm(trade_date),
-            action_task,
+            fetch_corporate_actions(),
         )
         if symbols:
             allowed = {s.upper() for s in symbols}
@@ -109,12 +125,20 @@ class Pipeline:
         if finalize:
             await self.repository.refresh_percentiles(trade_date)
             await self.repository.refresh_aggregates()
+        if not sync_corporate_actions or self.corporate_actions_source is None:
+            corporate_action_sync_status = "skipped"
+        elif corporate_action_sync_error is not None:
+            corporate_action_sync_status = "failed"
+        else:
+            corporate_action_sync_status = "ok"
         return {
             "trade_date": trade_date.isoformat(),
             "options_rows": option_count,
             "equity_rows": equity_count,
             "symbols": len(symbols_for_metrics),
             "corporate_actions": len(corporate_actions),
+            "corporate_action_sync_status": corporate_action_sync_status,
+            "corporate_action_sync_error": corporate_action_sync_error,
             "corporate_action_factors": action_resolution,
             "finalized": finalize,
         }

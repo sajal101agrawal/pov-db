@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from html import escape
 from typing import Any
 
@@ -33,8 +33,10 @@ from app.sources.dhan import (
     normalize_market_quotes as normalize_dhan_market_quotes,
 )
 from app.sources.kite import KiteConnectClient, quote_last_price as kite_quote_last_price
+from app.sources.nse import NSEArchiveClient
 from app.sources.nse_option_chain import NSEOptionChainClient
 from app.sources.rates import IndiaRiskFreeRateClient
+from app.sources.samco import SamcoBhavcopyClient
 from app.sources.yahoo import YahooFinanceClient
 
 
@@ -70,6 +72,10 @@ async def health(repo: MarketRepository = Depends(repository)) -> dict:
 async def system_health(
     request: Request,
     symbol: str = Query(default="RELIANCE", description="Symbol to probe live providers with"),
+    bhavcopy_date: date | None = Query(
+        default=None,
+        description="EOD bhavcopy date to probe. Defaults to the previous weekday.",
+    ),
     view_format: str = Query(
         default="auto",
         alias="format",
@@ -82,10 +88,21 @@ async def system_health(
 ) -> dict | HTMLResponse:
     """On-demand browser-friendly health check for DB, Redis, and live data providers."""
     probe_symbol = (symbol or "RELIANCE").strip().upper()
+    probe_bhavcopy_date = bhavcopy_date or _default_bhavcopy_probe_date(datetime.now(IST).date())
     checks = dict(
         await asyncio.gather(
             _run_health_check("database", _check_database(repo)),
             _run_health_check("redis", _check_redis(cache_service)),
+            _run_health_check(
+                "samco_bhavcopy",
+                _check_samco_bhavcopy(settings, probe_bhavcopy_date),
+                required=False,
+            ),
+            _run_health_check(
+                "nse_bhavcopy",
+                _check_nse_bhavcopy(settings, probe_bhavcopy_date),
+                required=False,
+            ),
             _run_health_check(
                 "kite",
                 _check_kite(settings, repo, cache_service, probe_symbol),
@@ -109,6 +126,7 @@ async def system_health(
             _run_health_check("live_state", _check_live_state(settings, repo, cache_service, probe_symbol)),
         )
     )
+    checks["eod_bhavcopy"] = _check_eod_bhavcopy_status(checks, probe_bhavcopy_date)
     status = _overall_health_status(checks)
     current_sources = _current_source_config(settings)
     payload = {
@@ -116,6 +134,7 @@ async def system_health(
         "status": status,
         "generated_at": datetime.now(IST).isoformat(),
         "symbol": probe_symbol,
+        "bhavcopy_probe_date": probe_bhavcopy_date.isoformat(),
         "current_sources": current_sources,
         "config": {
             "app_env": settings.app_env,
@@ -268,6 +287,89 @@ async def _check_nse_option_chain(settings: Settings, symbol: str) -> dict[str, 
         "underlying_last_price": chain.get("underlying_last_price"),
         "strike_count": chain.get("strike_count"),
         "timestamp": chain.get("nse_option_chain_timestamp"),
+    }
+
+
+async def _check_samco_bhavcopy(settings: Settings, trade_date: date) -> dict[str, Any]:
+    client = SamcoBhavcopyClient(
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+    )
+    return await _check_bhavcopy_client("samco", client, trade_date)
+
+
+async def _check_nse_bhavcopy(settings: Settings, trade_date: date) -> dict[str, Any]:
+    client = NSEArchiveClient(
+        settings.nse_request_delay_seconds,
+        settings.source_retry_attempts,
+        settings.source_retry_base_delay_seconds,
+        settings.source_retry_max_delay_seconds,
+    )
+    return await _check_bhavcopy_client("nse", client, trade_date)
+
+
+async def _check_bhavcopy_client(provider: str, client: Any, trade_date: date) -> dict[str, Any]:
+    async def fetch_segment(name: str, check: Any) -> tuple[str, dict[str, Any]]:
+        try:
+            rows = await check(trade_date)
+            return name, {
+                "status": "ok" if rows else "warn",
+                "rows": len(rows),
+                "source": rows[0].source if rows else None,
+            }
+        except Exception as exc:  # noqa: BLE001 - health endpoint must report provider failures
+            return name, {"status": "fail", "error": _health_error(exc)}
+
+    segments = dict(
+        await asyncio.gather(
+            fetch_segment("fo", client.fetch_fo),
+            fetch_segment("cm", client.fetch_cm),
+        )
+    )
+    segment_statuses = [item["status"] for item in segments.values()]
+    if all(status == "ok" for status in segment_statuses):
+        status = "ok"
+    elif any(status == "fail" for status in segment_statuses):
+        status = "fail"
+    else:
+        status = "warn"
+    return {
+        "status": status,
+        "provider": provider,
+        "trade_date": trade_date.isoformat(),
+        "fo_rows": segments["fo"].get("rows"),
+        "fo_source": segments["fo"].get("source"),
+        "fo_error": segments["fo"].get("error"),
+        "cm_rows": segments["cm"].get("rows"),
+        "cm_source": segments["cm"].get("source"),
+        "cm_error": segments["cm"].get("error"),
+    }
+
+
+def _check_eod_bhavcopy_status(checks: dict[str, dict[str, Any]], trade_date: date) -> dict[str, Any]:
+    provider_statuses = {
+        "samco": str((checks.get("samco_bhavcopy") or {}).get("status") or "fail"),
+        "nse": str((checks.get("nse_bhavcopy") or {}).get("status") or "fail"),
+    }
+    ok_providers = [name for name, status in provider_statuses.items() if status == "ok"]
+    if len(ok_providers) == len(provider_statuses):
+        status = "ok"
+        message = None
+    elif ok_providers:
+        status = "warn"
+        message = "Only one EOD bhavcopy provider is currently usable"
+    else:
+        status = "fail"
+        message = "No EOD bhavcopy provider is currently usable"
+    return {
+        "status": status,
+        "required": True,
+        "trade_date": trade_date.isoformat(),
+        "samco_status": provider_statuses["samco"],
+        "nse_status": provider_statuses["nse"],
+        "usable_providers": ok_providers,
+        "message": message,
     }
 
 
@@ -427,6 +529,13 @@ def _provider_roles(settings: Settings, provider: str) -> list[str]:
     return roles
 
 
+def _default_bhavcopy_probe_date(today: date) -> date:
+    probe = today - timedelta(days=1)
+    while probe.weekday() >= 5:
+        probe -= timedelta(days=1)
+    return probe
+
+
 def _snapshot_age_seconds(value: Any) -> float | None:
     if value is None:
         return None
@@ -464,6 +573,9 @@ def _system_health_html(payload: dict[str, Any], json_url: str) -> str:
     cards = "\n".join(
         _system_health_card_html(name, checks[name])
         for name in (
+            "eod_bhavcopy",
+            "samco_bhavcopy",
+            "nse_bhavcopy",
             "live_state",
             "kite",
             "nse_option_chain",

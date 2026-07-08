@@ -15,7 +15,6 @@ from app.db.repository import MarketRepository
 from app.etl.pipeline import Pipeline
 from app.services.factory import build_bhavcopy_source, build_corporate_actions_source
 from app.services.s3_dump import upload_etl_dump
-from app.sources.nse import NSEArchiveClient
 from app.sources.nse_events import NSECorporateEventsClient
 from app.sources.yahoo_events import YahooEarningsCalendarClient
 from app.sources.nse_metadata import NSEMetadataClient
@@ -41,15 +40,23 @@ async def main() -> None:
         corporate_actions_source=build_corporate_actions_source(settings),
     )
     try:
-        result = await pipeline.run_for_date(trade_date, symbols, finalize=True)
+        result = await pipeline.run_for_date(
+            trade_date,
+            symbols,
+            finalize=True,
+            strict_corporate_actions=False,
+        )
+        if result.get("corporate_action_sync_error"):
+            result["corporate_action_sync_error_id"] = await repo.log_error(
+                "daily_update_corporate_actions",
+                result["corporate_action_sync_error"].get("type", "Error"),
+                {**result["corporate_action_sync_error"], "symbols": symbols},
+                trade_date=trade_date,
+                source="nse:corporate-actions",
+            )
         await repo.upsert_trading_calendar([{"trade_date": trade_date, "is_trading_day": True, "source": "daily_update"}])
 
-        fo_rows = await NSEArchiveClient(
-            settings.nse_request_delay_seconds,
-            settings.source_retry_attempts,
-            settings.source_retry_base_delay_seconds,
-            settings.source_retry_max_delay_seconds,
-        ).fetch_fo(trade_date)
+        fo_rows = await pipeline.bhavcopy_source.fetch_fo(trade_date)
         active_universe = {}
         for row in fo_rows:
             active_universe[row.symbol] = "index" if row.instrument_type == "OPTIDX" else "individual_securities"
@@ -61,33 +68,71 @@ async def main() -> None:
             ]
         )
         active_symbols = sorted(active_universe)
-        metadata = await NSEMetadataClient(
-            settings.nse_request_delay_seconds,
-            settings.source_retry_attempts,
-            settings.source_retry_base_delay_seconds,
-            settings.source_retry_max_delay_seconds,
-        ).fetch_metadata(set(active_symbols), enrich_quote=False)
-        metadata_count = await repo.upsert_symbol_metadata(metadata)
+        metadata_count = 0
+        metadata_error_id = None
+        try:
+            metadata = await NSEMetadataClient(
+                settings.nse_request_delay_seconds,
+                settings.source_retry_attempts,
+                settings.source_retry_base_delay_seconds,
+                settings.source_retry_max_delay_seconds,
+            ).fetch_metadata(set(active_symbols), enrich_quote=False)
+            metadata_count = await repo.upsert_symbol_metadata(metadata)
+        except Exception as exc:  # noqa: BLE001 - metadata refresh must not block EOD load
+            metadata_error_id = await repo.log_error(
+                "daily_update_metadata",
+                type(exc).__name__,
+                {"message": str(exc), "repr": repr(exc), "symbols": active_symbols},
+                trade_date=trade_date,
+                source="nse:metadata",
+            )
 
         events_count = 0
+        event_errors = []
+        yahoo_events_deleted = 0
         if not args.skip_events:
             event_symbols = symbols or active_symbols
-            nse_events = await NSECorporateEventsClient(settings.nse_request_delay_seconds).fetch_result_events(
-                event_symbols
-            )
-            yahoo_symbols = await repo.yahoo_symbols_for(event_symbols)
-            yahoo_events = await YahooEarningsCalendarClient(
-                request_delay_seconds=settings.nse_request_delay_seconds,
-                retry_attempts=settings.source_retry_attempts,
-                retry_base_delay_seconds=settings.source_retry_base_delay_seconds,
-                retry_max_delay_seconds=settings.source_retry_max_delay_seconds,
-            ).fetch_upcoming_result_events(event_symbols, yahoo_symbols)
-            yahoo_events_deleted = await repo.delete_future_events_by_source(
-                event_symbols,
-                "yahoo:earnings-calendar",
-                date.today(),
-            )
-            events_count = await repo.upsert_events([*nse_events, *yahoo_events])
+            nse_events = []
+            yahoo_events = []
+            try:
+                nse_events = await NSECorporateEventsClient(
+                    settings.nse_request_delay_seconds
+                ).fetch_result_events(event_symbols)
+            except Exception as exc:  # noqa: BLE001 - event refresh must not block EOD load
+                event_errors.append(
+                    await repo.log_error(
+                        "daily_update_events",
+                        type(exc).__name__,
+                        {"message": str(exc), "repr": repr(exc), "provider": "nse", "symbols": event_symbols},
+                        trade_date=trade_date,
+                        source="nse:event-calendar",
+                    )
+                )
+            try:
+                yahoo_symbols = await repo.yahoo_symbols_for(event_symbols)
+                yahoo_events = await YahooEarningsCalendarClient(
+                    request_delay_seconds=settings.nse_request_delay_seconds,
+                    retry_attempts=settings.source_retry_attempts,
+                    retry_base_delay_seconds=settings.source_retry_base_delay_seconds,
+                    retry_max_delay_seconds=settings.source_retry_max_delay_seconds,
+                ).fetch_upcoming_result_events(event_symbols, yahoo_symbols)
+                yahoo_events_deleted = await repo.delete_future_events_by_source(
+                    event_symbols,
+                    "yahoo:earnings-calendar",
+                    date.today(),
+                )
+            except Exception as exc:  # noqa: BLE001 - event refresh must not block EOD load
+                event_errors.append(
+                    await repo.log_error(
+                        "daily_update_events",
+                        type(exc).__name__,
+                        {"message": str(exc), "repr": repr(exc), "provider": "yahoo", "symbols": event_symbols},
+                        trade_date=trade_date,
+                        source="yahoo:earnings-calendar",
+                    )
+                )
+            if nse_events or yahoo_events:
+                events_count = await repo.upsert_events([*nse_events, *yahoo_events])
 
         dump_result = await asyncio.to_thread(upload_etl_dump, settings, trade_date)
 
@@ -98,8 +143,10 @@ async def main() -> None:
                     **result,
                     "active_symbols": len(active_symbols),
                     "metadata_upserted": metadata_count,
-                    "yahoo_events_deleted": yahoo_events_deleted if not args.skip_events else 0,
+                    "metadata_error_id": metadata_error_id,
+                    "yahoo_events_deleted": yahoo_events_deleted,
                     "events_upserted": events_count,
+                    "event_error_ids": event_errors,
                     "s3_dump": dump_result,
                 },
                 default=str,

@@ -48,6 +48,7 @@ class NSEOptionChainClient:
         semaphore = asyncio.Semaphore(self.concurrency)
         stop_event = asyncio.Event()
         async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30) as client:
+            await self._prime_session(client)
             tasks = [
                 self._fetch_summary(
                     client,
@@ -76,6 +77,7 @@ class NSEOptionChainClient:
         stop_event = asyncio.Event()
         expiry = _format_expiry(expiry_hint) or self.discovery_expiry
         async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30) as client:
+            await self._prime_session(client)
             payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
             if payload and expiry == self.discovery_expiry:
                 expiries = ((payload.get("records") or {}).get("expiryDates")) or []
@@ -167,6 +169,29 @@ class NSEOptionChainClient:
             return None
         except (httpx.HTTPError, ValueError):
             return None
+
+    async def _prime_session(self, client: httpx.AsyncClient) -> None:
+        headers = {
+            **NSE_HEADERS,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": "https://www.nseindia.com/",
+        }
+
+        async def request() -> httpx.Response:
+            response = await client.get("https://www.nseindia.com/option-chain", headers=headers)
+            response.raise_for_status()
+            return response
+
+        try:
+            await retry_async(
+                request,
+                attempts=self.retry_attempts,
+                base_delay_seconds=self.retry_base_delay_seconds,
+                max_delay_seconds=self.retry_max_delay_seconds,
+                retryable=_is_retryable_nse_exception,
+            )
+        except httpx.HTTPError:
+            return
 
     async def _throttle(self) -> None:
         async with self._throttle_lock:
