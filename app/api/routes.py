@@ -6,7 +6,9 @@ import time
 from datetime import date, datetime, timedelta
 from html import escape
 from typing import Any
+from urllib.parse import urlsplit
 
+import boto3
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -94,6 +96,16 @@ async def system_health(
             _run_health_check("database", _check_database(repo)),
             _run_health_check("redis", _check_redis(cache_service)),
             _run_health_check(
+                "nse_proxy",
+                _check_nse_proxy(settings),
+                required=False,
+            ),
+            _run_health_check(
+                "s3",
+                _check_s3(settings),
+                required=False,
+            ),
+            _run_health_check(
                 "samco_bhavcopy",
                 _check_samco_bhavcopy(settings, probe_bhavcopy_date),
                 required=False,
@@ -139,6 +151,8 @@ async def system_health(
         "config": {
             "app_env": settings.app_env,
             **current_sources,
+            "nse_proxy_configured": bool(settings.nse_proxy_url),
+            "s3_dump_configured": bool(settings.s3_dump_bucket),
             "live_symbols": settings.live_symbols,
             "live_cache_ttl_seconds": settings.live_cache_ttl_seconds,
             "live_poll_interval_seconds": settings.live_poll_interval_seconds,
@@ -221,6 +235,74 @@ async def _check_redis(cache_service: CacheService) -> dict[str, Any]:
     return {"status": "ok" if pong else "fail", "ping": bool(pong)}
 
 
+async def _check_nse_proxy(settings: Settings) -> dict[str, Any]:
+    if not settings.nse_proxy_url:
+        return {
+            "status": "disabled",
+            "configured": False,
+        }
+    async with httpx.AsyncClient(proxy=settings.nse_proxy_url, timeout=20, follow_redirects=True) as client:
+        response = await client.get("https://ip.decodo.com/json")
+        response.raise_for_status()
+        payload = response.json()
+    country = payload.get("country") or {}
+    city = payload.get("city") or {}
+    proxy = payload.get("proxy") or {}
+    isp = payload.get("isp") or {}
+    country_code = country.get("code")
+    status = "ok" if country_code == "IN" else "warn"
+    return {
+        "status": status,
+        "configured": True,
+        "endpoint": _proxy_endpoint(settings.nse_proxy_url),
+        "country": country.get("name"),
+        "country_code": country_code,
+        "city": city.get("name"),
+        "state": city.get("state"),
+        "isp": isp.get("isp") or isp.get("organization"),
+        "egress_ip": proxy.get("ip"),
+        "message": None if status == "ok" else "NSE proxy is not exiting from India",
+    }
+
+
+async def _check_s3(settings: Settings) -> dict[str, Any]:
+    if not settings.s3_dump_bucket:
+        return {
+            "status": "disabled",
+            "configured": False,
+            "message": "S3_DUMP_BUCKET not set",
+        }
+    return await asyncio.to_thread(_check_s3_sync, settings)
+
+
+def _check_s3_sync(settings: Settings) -> dict[str, Any]:
+    client = boto3.client(
+        "s3",
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id or None,
+        aws_secret_access_key=settings.aws_secret_access_key or None,
+    )
+    client.list_objects_v2(
+        Bucket=settings.s3_dump_bucket,
+        Prefix=settings.s3_dump_prefix,
+        MaxKeys=1,
+    )
+    return {
+        "status": "ok",
+        "configured": True,
+        "bucket": settings.s3_dump_bucket,
+        "prefix": settings.s3_dump_prefix,
+        "region": settings.aws_region,
+        "access_key": _mask_value(settings.aws_access_key_id),
+        "credential_source": (
+            "static_keys"
+            if settings.aws_access_key_id and settings.aws_secret_access_key
+            else "default_aws_provider_chain"
+        ),
+        "list_prefix_ok": True,
+    }
+
+
 async def _check_kite(
     settings: Settings,
     repo: MarketRepository,
@@ -271,17 +353,20 @@ async def _check_nse_option_chain(settings: Settings, symbol: str) -> dict[str, 
         settings.source_retry_max_delay_seconds,
         settings.live_option_summary_concurrency,
         settings.live_option_summary_min_interval_seconds,
+        settings.nse_proxy_url,
     )
     chain = await client.fetch_chain(symbol)
     if not chain:
         return {
             "status": "fail",
             "active_for": active_for,
+            "proxy_configured": bool(settings.nse_proxy_url),
             "message": "NSE option chain returned no payload",
         }
     return {
         "status": "ok" if chain.get("strike_count") else "warn",
         "active_for": active_for,
+        "proxy_configured": bool(settings.nse_proxy_url),
         "source": chain.get("source"),
         "expiry": chain.get("expiry"),
         "underlying_last_price": chain.get("underlying_last_price"),
@@ -305,8 +390,11 @@ async def _check_nse_bhavcopy(settings: Settings, trade_date: date) -> dict[str,
         settings.source_retry_attempts,
         settings.source_retry_base_delay_seconds,
         settings.source_retry_max_delay_seconds,
+        settings.nse_proxy_url,
     )
-    return await _check_bhavcopy_client("nse", client, trade_date)
+    result = await _check_bhavcopy_client("nse", client, trade_date)
+    result["proxy_configured"] = bool(settings.nse_proxy_url)
+    return result
 
 
 async def _check_bhavcopy_client(provider: str, client: Any, trade_date: date) -> dict[str, Any]:
@@ -536,6 +624,16 @@ def _default_bhavcopy_probe_date(today: date) -> date:
     return probe
 
 
+def _proxy_endpoint(proxy_url: str | None) -> str | None:
+    if not proxy_url:
+        return None
+    parsed = urlsplit(proxy_url)
+    if not parsed.hostname:
+        return None
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname}{port}"
+
+
 def _snapshot_age_seconds(value: Any) -> float | None:
     if value is None:
         return None
@@ -574,6 +672,8 @@ def _system_health_html(payload: dict[str, Any], json_url: str) -> str:
         _system_health_card_html(name, checks[name])
         for name in (
             "eod_bhavcopy",
+            "nse_proxy",
+            "s3",
             "samco_bhavcopy",
             "nse_bhavcopy",
             "live_state",

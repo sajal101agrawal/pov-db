@@ -24,12 +24,14 @@ class NSECorporateActionsClient:
         retry_base_delay_seconds: float = 0.75,
         retry_max_delay_seconds: float = 8.0,
         chunk_days: int = 180,
+        proxy_url: str | None = None,
     ) -> None:
         self.request_delay_seconds = request_delay_seconds
         self.retry_attempts = retry_attempts
         self.retry_base_delay_seconds = retry_base_delay_seconds
         self.retry_max_delay_seconds = retry_max_delay_seconds
         self.chunk_days = max(1, chunk_days)
+        self.proxy_url = proxy_url
 
     async def fetch_actions(
         self,
@@ -41,7 +43,11 @@ class NSECorporateActionsClient:
             return []
         allowed = {symbol.upper() for symbol in symbols} if symbols else None
         actions: dict[str, dict[str, Any]] = {}
-        async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=45,
+            follow_redirects=True,
+            proxy=self.proxy_url,
+        ) as client:
             await self._prime_session(client)
             chunk_start = start
             while chunk_start <= end:

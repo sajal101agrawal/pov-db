@@ -47,11 +47,13 @@ class NSEMetadataClient:
         retry_attempts: int = 3,
         retry_base_delay_seconds: float = 0.75,
         retry_max_delay_seconds: float = 8.0,
+        proxy_url: str | None = None,
     ) -> None:
         self.request_delay_seconds = request_delay_seconds
         self.retry_attempts = retry_attempts
         self.retry_base_delay_seconds = retry_base_delay_seconds
         self.retry_max_delay_seconds = retry_max_delay_seconds
+        self.proxy_url = proxy_url
 
     async def fetch_metadata(self, symbols: set[str] | None = None, enrich_quote: bool = False) -> list[SymbolMetadata]:
         equity_rows = await self.fetch_equity_list()
@@ -79,7 +81,12 @@ class NSEMetadataClient:
                 )
 
         if enrich_quote:
-            async with httpx.AsyncClient(headers=NSE_HEADERS, follow_redirects=True, timeout=30) as client:
+            async with httpx.AsyncClient(
+                headers=NSE_HEADERS,
+                follow_redirects=True,
+                timeout=30,
+                proxy=self.proxy_url,
+            ) as client:
                 await client.get("https://www.nseindia.com")
                 for symbol in sorted(records):
                     await asyncio.sleep(self.request_delay_seconds)
@@ -166,7 +173,12 @@ class NSEMetadataClient:
         }
 
     async def _download_first_text(self, urls: list[str]) -> str:
-        async with httpx.AsyncClient(headers=NSE_HEADERS, follow_redirects=True, timeout=30) as client:
+        async with httpx.AsyncClient(
+            headers=NSE_HEADERS,
+            follow_redirects=True,
+            timeout=30,
+            proxy=self.proxy_url,
+        ) as client:
             last_error: Exception | None = None
             for url in urls:
                 await asyncio.sleep(self.request_delay_seconds)

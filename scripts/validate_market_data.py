@@ -60,7 +60,13 @@ async def main() -> None:
         ]
         dates = list(reversed(dates))
 
-        client = NSEArchiveClient(settings.nse_request_delay_seconds)
+        client = NSEArchiveClient(
+            settings.nse_request_delay_seconds,
+            settings.source_retry_attempts,
+            settings.source_retry_base_delay_seconds,
+            settings.source_retry_max_delay_seconds,
+            settings.nse_proxy_url,
+        )
         results = []
         mismatches = []
         for trade_date in dates:

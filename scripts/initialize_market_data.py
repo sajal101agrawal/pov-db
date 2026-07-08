@@ -88,6 +88,7 @@ async def refresh_universe(repo: MarketRepository, trade_date: date, enrich_quot
         settings.source_retry_attempts,
         settings.source_retry_base_delay_seconds,
         settings.source_retry_max_delay_seconds,
+        settings.nse_proxy_url,
     ).fetch_metadata(set(symbols), enrich_quote=enrich_quote)
     metadata_count = await repo.upsert_symbol_metadata(metadata)
     return {"trade_date": trade_date.isoformat(), "active_symbols": len(symbols), "discovered": discovered, "metadata": metadata_count}
@@ -185,9 +186,13 @@ async def main() -> None:
 
         if not args.skip_events:
             event_symbols = symbols or await repo.active_symbols()
-            nse_events = await NSECorporateEventsClient(settings.nse_request_delay_seconds).fetch_result_events(
-                event_symbols
-            )
+            nse_events = await NSECorporateEventsClient(
+                settings.nse_request_delay_seconds,
+                settings.source_retry_attempts,
+                settings.source_retry_base_delay_seconds,
+                settings.source_retry_max_delay_seconds,
+                settings.nse_proxy_url,
+            ).fetch_result_events(event_symbols)
             yahoo_symbols = await repo.yahoo_symbols_for(event_symbols)
             yahoo_events = await YahooEarningsCalendarClient(
                 request_delay_seconds=settings.nse_request_delay_seconds,

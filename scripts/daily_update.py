@@ -76,6 +76,7 @@ async def main() -> None:
                 settings.source_retry_attempts,
                 settings.source_retry_base_delay_seconds,
                 settings.source_retry_max_delay_seconds,
+                settings.nse_proxy_url,
             ).fetch_metadata(set(active_symbols), enrich_quote=False)
             metadata_count = await repo.upsert_symbol_metadata(metadata)
         except Exception as exc:  # noqa: BLE001 - metadata refresh must not block EOD load
@@ -96,7 +97,11 @@ async def main() -> None:
             yahoo_events = []
             try:
                 nse_events = await NSECorporateEventsClient(
-                    settings.nse_request_delay_seconds
+                    settings.nse_request_delay_seconds,
+                    settings.source_retry_attempts,
+                    settings.source_retry_base_delay_seconds,
+                    settings.source_retry_max_delay_seconds,
+                    settings.nse_proxy_url,
                 ).fetch_result_events(event_symbols)
             except Exception as exc:  # noqa: BLE001 - event refresh must not block EOD load
                 event_errors.append(

@@ -19,15 +19,21 @@ class NSECorporateEventsClient:
         retry_attempts: int = 3,
         retry_base_delay_seconds: float = 0.75,
         retry_max_delay_seconds: float = 8.0,
+        proxy_url: str | None = None,
     ) -> None:
         self.request_delay_seconds = request_delay_seconds
         self.retry_attempts = retry_attempts
         self.retry_base_delay_seconds = retry_base_delay_seconds
         self.retry_max_delay_seconds = retry_max_delay_seconds
+        self.proxy_url = proxy_url
 
     async def fetch_result_events(self, symbols: list[str]) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
-        async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=45,
+            follow_redirects=True,
+            proxy=self.proxy_url,
+        ) as client:
             await self._prime_session(client)
             for symbol in symbols:
                 events.extend(await self._fetch_symbol(client, symbol.upper()))

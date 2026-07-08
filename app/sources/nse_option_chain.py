@@ -25,12 +25,14 @@ class NSEOptionChainClient:
         retry_max_delay_seconds: float = 8.0,
         concurrency: int = 2,
         min_interval_seconds: float = 0.25,
+        proxy_url: str | None = None,
     ) -> None:
         self.retry_attempts = retry_attempts
         self.retry_base_delay_seconds = retry_base_delay_seconds
         self.retry_max_delay_seconds = retry_max_delay_seconds
         self.concurrency = max(1, concurrency)
         self.min_interval_seconds = max(0.0, min_interval_seconds)
+        self.proxy_url = proxy_url
         self._throttle_lock = asyncio.Lock()
         self._last_request_at = 0.0
 
@@ -47,7 +49,12 @@ class NSEOptionChainClient:
         }
         semaphore = asyncio.Semaphore(self.concurrency)
         stop_event = asyncio.Event()
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30) as client:
+        async with httpx.AsyncClient(
+            headers=headers,
+            follow_redirects=True,
+            timeout=30,
+            proxy=self.proxy_url,
+        ) as client:
             await self._prime_session(client)
             tasks = [
                 self._fetch_summary(
@@ -76,7 +83,12 @@ class NSEOptionChainClient:
         semaphore = asyncio.Semaphore(1)
         stop_event = asyncio.Event()
         expiry = _format_expiry(expiry_hint) or self.discovery_expiry
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30) as client:
+        async with httpx.AsyncClient(
+            headers=headers,
+            follow_redirects=True,
+            timeout=30,
+            proxy=self.proxy_url,
+        ) as client:
             await self._prime_session(client)
             payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
             if payload and expiry == self.discovery_expiry:

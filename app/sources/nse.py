@@ -27,11 +27,13 @@ class NSEArchiveClient:
         retry_attempts: int = 3,
         retry_base_delay_seconds: float = 0.75,
         retry_max_delay_seconds: float = 8.0,
+        proxy_url: str | None = None,
     ) -> None:
         self.request_delay_seconds = request_delay_seconds
         self.retry_attempts = retry_attempts
         self.retry_base_delay_seconds = retry_base_delay_seconds
         self.retry_max_delay_seconds = retry_max_delay_seconds
+        self.proxy_url = proxy_url
 
     def fo_urls(self, trade_date: date) -> list[str]:
         y = trade_date.strftime("%Y")
@@ -56,7 +58,12 @@ class NSEArchiveClient:
         ]
 
     async def _download_first(self, urls: list[str]) -> tuple[bytes, str]:
-        async with httpx.AsyncClient(headers=NSE_HEADERS, follow_redirects=True, timeout=45) as client:
+        async with httpx.AsyncClient(
+            headers=NSE_HEADERS,
+            follow_redirects=True,
+            timeout=45,
+            proxy=self.proxy_url,
+        ) as client:
             last_error: Exception | None = None
             for url in urls:
                 await asyncio.sleep(self.request_delay_seconds)

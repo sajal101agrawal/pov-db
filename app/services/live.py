@@ -181,6 +181,7 @@ async def _fetch_and_store_nse_live_snapshots(
         settings.source_retry_max_delay_seconds,
         settings.live_option_summary_concurrency,
         settings.live_option_summary_min_interval_seconds,
+        settings.nse_proxy_url,
     )
     cache = CacheService(redis)
     now = datetime.now(IST)
@@ -585,6 +586,7 @@ async def _fetch_nse_live_option_summaries(
         settings.source_retry_max_delay_seconds,
         settings.live_option_summary_concurrency,
         settings.live_option_summary_min_interval_seconds,
+        settings.nse_proxy_url,
     )
     try:
         return await client.fetch_summaries(symbols, expiry_hints)

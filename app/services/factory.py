@@ -14,6 +14,7 @@ def build_bhavcopy_source(settings: Settings) -> BhavcopySource:
             settings.source_retry_attempts,
             settings.source_retry_base_delay_seconds,
             settings.source_retry_max_delay_seconds,
+            settings.nse_proxy_url,
         ),
         SamcoBhavcopyClient(
             settings.source_retry_attempts,
@@ -29,4 +30,5 @@ def build_corporate_actions_source(settings: Settings) -> NSECorporateActionsCli
         settings.source_retry_attempts,
         settings.source_retry_base_delay_seconds,
         settings.source_retry_max_delay_seconds,
+        proxy_url=settings.nse_proxy_url,
     )

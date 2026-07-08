@@ -46,6 +46,7 @@ async def main() -> None:
                 settings.source_retry_attempts,
                 settings.source_retry_base_delay_seconds,
                 settings.source_retry_max_delay_seconds,
+                settings.nse_proxy_url,
             ).fetch_result_events(symbols)
 
         yahoo_events = []

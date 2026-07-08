@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     default_risk_free_rate: float = 0.10
     data_dir: Path = Path("data")
     nse_request_delay_seconds: float = 0.35
+    nse_proxy_url: str | None = None
     source_retry_attempts: int = 3
     source_retry_base_delay_seconds: float = 0.75
     source_retry_max_delay_seconds: float = 8.0
@@ -57,6 +58,11 @@ class Settings(BaseSettings):
     @field_validator("pipeline_symbol_limit", mode="before")
     @classmethod
     def blank_pipeline_symbol_limit(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @field_validator("nse_proxy_url", mode="before")
+    @classmethod
+    def blank_nse_proxy_url(cls, value: object) -> object:
         return None if value == "" else value
 
 

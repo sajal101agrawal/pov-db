@@ -7,6 +7,7 @@ from app.api.routes import (
     _default_bhavcopy_probe_date,
     _mask_value,
     _overall_health_status,
+    _proxy_endpoint,
     _provider_roles,
 )
 from app.core.config import Settings
@@ -74,6 +75,12 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
     async def redis(cache_service):
         return {"status": "ok"}
 
+    async def nse_proxy(settings):
+        return {"status": "ok", "configured": bool(settings.nse_proxy_url)}
+
+    async def s3(settings):
+        return {"status": "disabled", "configured": False}
+
     async def kite(settings, repo, cache_service, symbol):
         return {"status": "ok", "active_for": ["quote", "option_summary"]}
 
@@ -97,6 +104,8 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
 
     monkeypatch.setattr(routes, "_check_database", database)
     monkeypatch.setattr(routes, "_check_redis", redis)
+    monkeypatch.setattr(routes, "_check_nse_proxy", nse_proxy)
+    monkeypatch.setattr(routes, "_check_s3", s3)
     monkeypatch.setattr(routes, "_check_kite", kite)
     monkeypatch.setattr(routes, "_check_nse_option_chain", nse)
     monkeypatch.setattr(routes, "_check_samco_bhavcopy", samco_bhavcopy)
@@ -136,6 +145,8 @@ def test_system_health_payload_includes_current_sources(monkeypatch) -> None:
     assert result["checks"]["samco_bhavcopy"]["status"] == "ok"
     assert result["checks"]["nse_bhavcopy"]["status"] == "ok"
     assert result["checks"]["eod_bhavcopy"]["status"] == "ok"
+    assert result["checks"]["nse_proxy"]["status"] == "ok"
+    assert result["checks"]["s3"]["status"] == "disabled"
 
 
 def test_system_health_can_render_browser_html(monkeypatch) -> None:
@@ -144,6 +155,8 @@ def test_system_health_can_render_browser_html(monkeypatch) -> None:
 
     monkeypatch.setattr(routes, "_check_database", ok)
     monkeypatch.setattr(routes, "_check_redis", ok)
+    monkeypatch.setattr(routes, "_check_nse_proxy", ok)
+    monkeypatch.setattr(routes, "_check_s3", ok)
     monkeypatch.setattr(routes, "_check_kite", ok)
     monkeypatch.setattr(routes, "_check_nse_option_chain", ok)
     monkeypatch.setattr(routes, "_check_samco_bhavcopy", ok)
@@ -187,3 +200,10 @@ def test_system_health_eod_bhavcopy_status_requires_one_provider() -> None:
 def test_default_bhavcopy_probe_date_skips_weekends() -> None:
     assert _default_bhavcopy_probe_date(date(2026, 7, 8)) == date(2026, 7, 7)
     assert _default_bhavcopy_probe_date(date(2026, 7, 6)) == date(2026, 7, 3)
+
+
+def test_proxy_endpoint_masks_credentials() -> None:
+    assert (
+        _proxy_endpoint("https://user:secret@in.decodo.com:10001/")
+        == "https://in.decodo.com:10001"
+    )
