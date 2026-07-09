@@ -55,6 +55,14 @@ def test_golden_strategy_filter_uses_call_or_put_forward_factor() -> None:
         {"call_fwdfct_3060": 0.12, "put_fwdfct_3060": 0.15, "max_fwdfct_3060": 0.15},
         filters,
     )
+    assert _matches_numeric_filters(
+        {"call_fwdfct_3060": 0.18, "put_fwdfct_3060": 0.12, "max_fwdfct_3060": 0.12},
+        filters,
+    )
+    assert not _matches_numeric_filters(
+        {"call_fwdfct_3060": 0.12, "put_fwdfct_3060": 0.15, "max_fwdfct_3060": 0.18},
+        filters,
+    )
 
 
 def test_term_structure_live_overlay_uses_snapshot_date() -> None:

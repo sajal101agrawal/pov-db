@@ -1300,9 +1300,27 @@ def _overlay_live_dashboard_payload(payload: dict[str, Any], live_by_symbol: dic
     return {**payload, **live} if live else payload
 
 
+def _forward_factor_signal_value(payload: dict[str, Any]) -> float | None:
+    values = []
+    for key in ("call_fwdfct_3060", "put_fwdfct_3060"):
+        if payload.get(key) is None:
+            continue
+        try:
+            values.append(float(payload[key]))
+        except (TypeError, ValueError):
+            continue
+    if values:
+        return max(values)
+    return payload.get("max_fwdfct_3060")
+
+
 def _matches_numeric_filters(payload: dict[str, Any], numeric_filters: dict[str, dict[str, float]]) -> bool:
     for field, bounds in numeric_filters.items():
-        value = payload.get(field)
+        value = (
+            _forward_factor_signal_value(payload)
+            if field == "max_fwdfct_3060"
+            else payload.get(field)
+        )
         if value is None:
             return False
         try:
