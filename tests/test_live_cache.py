@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 
 import app.api.routes as routes
 import app.services.live as live_service
@@ -149,6 +150,7 @@ def test_live_symbols_uses_database_fallback_when_aggregate_cache_is_empty(monke
                 "ABC": {
                     "symbol": "ABC",
                     "current_price": 123.45,
+                    "bid_ask_spread_pct": 4.5,
                     "snapshot_time": "2026-07-08T12:00:00+05:30",
                 }
             }
@@ -174,6 +176,24 @@ def test_live_symbols_uses_database_fallback_when_aggregate_cache_is_empty(monke
         {
             "symbol": "ABC",
             "current_price": 123.45,
+            "bid_ask_spread_pct": 4.5,
             "snapshot_time": "2026-07-08T12:00:00+05:30",
         }
     ]
+
+
+def test_market_window_blocks_worker_after_close_and_weekends() -> None:
+    settings = Settings(live_market_start_ist="09:00", live_market_end_ist="16:00")
+
+    assert live_service.in_market_window(
+        settings,
+        datetime(2026, 7, 10, 15, 59, tzinfo=live_service.IST),
+    )
+    assert not live_service.in_market_window(
+        settings,
+        datetime(2026, 7, 10, 16, 1, tzinfo=live_service.IST),
+    )
+    assert not live_service.in_market_window(
+        settings,
+        datetime(2026, 7, 11, 10, 0, tzinfo=live_service.IST),
+    )

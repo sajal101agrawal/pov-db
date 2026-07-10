@@ -159,7 +159,7 @@ def test_dhan_option_summaries_fall_back_to_nse_on_provider_failure(monkeypatch)
 
     async def nse_success(settings: Settings, symbols: list[str], baseline: dict) -> dict:
         calls.append(",".join(symbols))
-        return {"AAA": {"provider": "nse", "live_option_volume": 20}}
+        return {"AAA": {"provider": "nse", "live_option_volume": 20, "bid_ask_spread_pct": 4.8}}
 
     class Repo:
         async def log_error(self, task_name: str, error_type: str, details: dict, source: str) -> None:
@@ -182,7 +182,9 @@ def test_dhan_option_summaries_fall_back_to_nse_on_provider_failure(monkeypatch)
     )
 
     assert calls == ["AAA"]
-    assert result == {"AAA": {"provider": "nse", "live_option_volume": 20}}
+    assert result == {
+        "AAA": {"provider": "nse", "live_option_volume": 20, "bid_ask_spread_pct": 4.8}
+    }
 
 
 def test_detail_history_overlay_appends_latest_live_row() -> None:

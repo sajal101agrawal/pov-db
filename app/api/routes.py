@@ -1255,6 +1255,7 @@ FILTERABLE_NUMERIC = {
     "iv30_fev30_ratio":  "sdm.iv30_fev30_ratio",
     "avg_option_volume": "sdm.avg_option_volume",
     "option_volume_60d": "sdm.option_volume_60d",
+    "bid_ask_spread_pct": "NULL",
     "avg_straddle_pnl":      "sa.avg_straddle_pnl",
     "avg_straddle_pnl_pct":  "sa.avg_straddle_pnl_pct",
     "avg_earnings_pnl":      "sa.avg_earnings_pnl",
@@ -1269,6 +1270,7 @@ FILTERABLE_NUMERIC = {
 LIVE_OVERLAY_NUMERIC_FIELDS = {
     "avg_option_volume",
     "option_volume_60d",
+    "bid_ask_spread_pct",
     "current_price",
     "fwdv_3060",
     "fwdfct_3060",
@@ -1322,6 +1324,8 @@ def _matches_numeric_filters(payload: dict[str, Any], numeric_filters: dict[str,
             else payload.get(field)
         )
         if value is None:
+            if field == "bid_ask_spread_pct":
+                continue
             return False
         try:
             number = float(value)
@@ -1329,8 +1333,12 @@ def _matches_numeric_filters(payload: dict[str, Any], numeric_filters: dict[str,
             return False
         if "min" in bounds and number < bounds["min"]:
             return False
-        if "max" in bounds and number > bounds["max"]:
-            return False
+        if "max" in bounds:
+            if field == "bid_ask_spread_pct":
+                if number >= bounds["max"]:
+                    return False
+            elif number > bounds["max"]:
+                return False
     return True
 
 
@@ -1915,6 +1923,13 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         "dte_60",
         "dte_90",
         "option_volume_60d",
+        "bid_ask_spread_pct",
+        "live_atm_call_bid_price",
+        "live_atm_call_ask_price",
+        "live_atm_put_bid_price",
+        "live_atm_put_ask_price",
+        "live_atm_call_bid_ask_spread_pct",
+        "live_atm_put_bid_ask_spread_pct",
         "expiry_30d",
         "expiry_60d",
         "expiry_90d",
@@ -2015,6 +2030,13 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
         "iv30_fev30_ratio",
         "avg_option_volume",
         "option_volume_60d",
+        "bid_ask_spread_pct",
+        "live_atm_call_bid_price",
+        "live_atm_call_ask_price",
+        "live_atm_put_bid_price",
+        "live_atm_put_ask_price",
+        "live_atm_call_bid_ask_spread_pct",
+        "live_atm_put_bid_ask_spread_pct",
         "avg_option_volume_source",
         "avg_option_volume_kind",
         "live_option_provider",

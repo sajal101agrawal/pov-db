@@ -188,6 +188,28 @@ def test_kite_option_summary_prefers_bid_ask_mid_over_ltp_for_iv() -> None:
     assert math.isclose(summary["live_atm_call_iv"], 0.25, rel_tol=1e-5)
     assert math.isclose(summary["live_atm_put_iv"], 0.20, rel_tol=1e-5)
     assert math.isclose(summary["live_atm_iv"], 0.225, rel_tol=1e-5)
+    assert math.isclose(
+        summary["live_atm_call_bid_ask_spread_pct"],
+        0.10 / call_mid * 100,
+        rel_tol=1e-5,
+    )
+    assert math.isclose(
+        summary["live_atm_put_bid_ask_spread_pct"],
+        0.10 / put_mid * 100,
+        rel_tol=1e-5,
+    )
+    assert summary["bid_ask_spread_pct"] == max(
+        summary["live_atm_call_bid_ask_spread_pct"],
+        summary["live_atm_put_bid_ask_spread_pct"],
+    )
+
+
+def test_bid_ask_spread_pct_rejects_missing_zero_and_inverted_quotes() -> None:
+    assert live_service._bid_ask_spread_pct(None, 100) is None
+    assert live_service._bid_ask_spread_pct(0, 100) is None
+    assert live_service._bid_ask_spread_pct(100, 0) is None
+    assert live_service._bid_ask_spread_pct(101, 100) is None
+    assert live_service._bid_ask_spread_pct("bad", 100) is None
 
 
 def test_kite_option_summary_ignores_stale_ltp_without_depth_or_volume() -> None:
@@ -352,6 +374,29 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
     ]
 
 
+def test_live_quote_payload_adds_bid_ask_spread_from_option_summary() -> None:
+    now = datetime(2026, 6, 1, 10, 0, tzinfo=live_service.IST)
+    payload = live_service._live_quote_payload(
+        {},
+        {"symbol": "ABC", "provider": "kite", "current_price": 100.0},
+        {
+            "provider": "nse",
+            "live_option_volume": 1000,
+            "live_option_volume_source": "nse:option-chain-v3",
+            "live_option_volume_kind": "total_contracts_all_strikes",
+            "live_atm_call_bid_price": 95,
+            "live_atm_call_ask_price": 105,
+            "live_atm_put_bid_price": 99,
+            "live_atm_put_ask_price": 101,
+        },
+        now,
+    )
+
+    assert payload["live_atm_call_bid_ask_spread_pct"] == 10.0
+    assert payload["live_atm_put_bid_ask_spread_pct"] == 2.0
+    assert payload["bid_ask_spread_pct"] == 10.0
+
+
 def test_kite_token_refresh_logs_missing_request_token_once() -> None:
     class Repo:
         def __init__(self) -> None:
@@ -433,7 +478,7 @@ def test_kite_option_summary_provider_falls_back_to_nse_on_failure(monkeypatch) 
         raise RuntimeError("kite token missing")
 
     async def nse_success(settings: Settings, symbols: list[str], baseline: dict) -> dict:
-        return {"ABC": {"provider": "nse", "live_option_volume": 20}}
+        return {"ABC": {"provider": "nse", "live_option_volume": 20, "bid_ask_spread_pct": 4.8}}
 
     class Repo:
         async def log_error(self, task_name: str, error_type: str, details: dict, source: str) -> None:
@@ -455,7 +500,9 @@ def test_kite_option_summary_provider_falls_back_to_nse_on_failure(monkeypatch) 
         )
     )
 
-    assert result == {"ABC": {"provider": "nse", "live_option_volume": 20}}
+    assert result == {
+        "ABC": {"provider": "nse", "live_option_volume": 20, "bid_ask_spread_pct": 4.8}
+    }
 
 
 def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monkeypatch) -> None:
@@ -510,6 +557,7 @@ def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monk
         return {
             "ABC": {
                 "provider": "nse",
+                "bid_ask_spread_pct": 4.8,
                 "live_iv_terms": [
                     {
                         "expiry_date": date(2026, 7, 28),
@@ -539,6 +587,7 @@ def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monk
     )
 
     assert result["ABC"]["provider"] == "nse"
+    assert result["ABC"]["bid_ask_spread_pct"] == 4.8
     assert len(result["ABC"]["live_iv_terms"]) == 2
     assert result["OK"]["provider"] == "kite"
 

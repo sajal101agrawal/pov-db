@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 
 from app.api.routes import (
+    _live_payloads_by_symbol,
     _matches_numeric_filters,
     _overlay_live_dashboard_payload,
     _overlay_live_term_structure,
@@ -63,6 +65,42 @@ def test_golden_strategy_filter_uses_call_or_put_forward_factor() -> None:
         {"call_fwdfct_3060": 0.12, "put_fwdfct_3060": 0.15, "max_fwdfct_3060": 0.18},
         filters,
     )
+
+
+def test_bid_ask_spread_filter_uses_percent_points() -> None:
+    filters = {"bid_ask_spread_pct": {"max": 5}}
+
+    assert _matches_numeric_filters({"bid_ask_spread_pct": 4.99}, filters)
+    assert not _matches_numeric_filters({"bid_ask_spread_pct": 5.0}, filters)
+    assert not _matches_numeric_filters({"bid_ask_spread_pct": 5.01}, filters)
+    assert _matches_numeric_filters({}, filters)
+
+
+def test_dashboard_post_market_live_db_fallback_keeps_spread_filter() -> None:
+    class FakeCache:
+        async def get_live_symbols(self) -> list[dict]:
+            return []
+
+    class FakeRepo:
+        async def latest_live_metrics(self, symbols: list[str] | None = None) -> dict[str, dict]:
+            assert symbols is None
+            return {
+                "ABC": {
+                    "symbol": "ABC",
+                    "bid_ask_spread_pct": 4.5,
+                    "snapshot_time": "2026-07-09T15:59:00+05:30",
+                }
+            }
+
+    live_by_symbol = asyncio.run(
+        _live_payloads_by_symbol(
+            FakeCache(),  # type: ignore[arg-type]
+            FakeRepo(),  # type: ignore[arg-type]
+        )
+    )
+    payload = _overlay_live_dashboard_payload({"symbol": "ABC"}, live_by_symbol)
+
+    assert _matches_numeric_filters(payload, {"bid_ask_spread_pct": {"max": 5}})
 
 
 def test_term_structure_live_overlay_uses_snapshot_date() -> None:

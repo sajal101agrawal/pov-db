@@ -249,6 +249,10 @@ def normalize_option_chain_summary(
                 "strike": strike,
                 "ce_iv": _iv_decimal(ce.get("impliedVolatility")),
                 "pe_iv": _iv_decimal(pe.get("impliedVolatility")),
+                "ce_bid": _first_numeric(ce, ["bidprice", "bidPrice"]),
+                "ce_ask": _first_numeric(ce, ["askPrice", "askprice"]),
+                "pe_bid": _first_numeric(pe, ["bidprice", "bidPrice"]),
+                "pe_ask": _first_numeric(pe, ["askPrice", "askprice"]),
             }
         )
 
@@ -258,6 +262,10 @@ def normalize_option_chain_summary(
     atm = _atm_row(strikes, underlying)
     call_iv = atm.get("ce_iv") if atm else None
     put_iv = atm.get("pe_iv") if atm else None
+    call_bid = atm.get("ce_bid") if atm else None
+    call_ask = atm.get("ce_ask") if atm else None
+    put_bid = atm.get("pe_bid") if atm else None
+    put_ask = atm.get("pe_ask") if atm else None
     atm_iv = _average([call_iv, put_iv])
     expiry_date = _parse_expiry(expiry)
     return {
@@ -274,6 +282,10 @@ def normalize_option_chain_summary(
         "live_atm_iv": atm_iv,
         "live_atm_call_iv": call_iv,
         "live_atm_put_iv": put_iv,
+        "live_atm_call_bid_price": call_bid,
+        "live_atm_call_ask_price": call_ask,
+        "live_atm_put_bid_price": put_bid,
+        "live_atm_put_ask_price": put_ask,
         "live_atm_iv_source": "nse:option-chain-v3" if atm_iv is not None else None,
         "nse_option_chain_timestamp": records.get("timestamp"),
     }

@@ -227,6 +227,10 @@ def normalize_option_chain_summary(
                 "pe_iv": _iv_decimal(pe.get("implied_volatility")),
                 "ce_ltp": _float(ce.get("last_price")),
                 "pe_ltp": _float(pe.get("last_price")),
+                "ce_bid": _float(ce.get("top_bid_price")),
+                "ce_ask": _float(ce.get("top_ask_price")),
+                "pe_bid": _float(pe.get("top_bid_price")),
+                "pe_ask": _float(pe.get("top_ask_price")),
                 "ce_volume": ce_volume,
                 "pe_volume": pe_volume,
                 "ce_oi": _int(ce.get("oi")),
@@ -240,6 +244,10 @@ def normalize_option_chain_summary(
     atm = _atm_row(strikes, underlying)
     call_iv = atm.get("ce_iv") if atm else None
     put_iv = atm.get("pe_iv") if atm else None
+    call_bid = atm.get("ce_bid") if atm else None
+    call_ask = atm.get("ce_ask") if atm else None
+    put_bid = atm.get("pe_bid") if atm else None
+    put_ask = atm.get("pe_ask") if atm else None
     atm_iv = _average_available([call_iv, put_iv])
     call_volume = atm.get("ce_volume") if atm else None
     put_volume = atm.get("pe_volume") if atm else None
@@ -260,6 +268,10 @@ def normalize_option_chain_summary(
         "live_atm_iv": atm_iv,
         "live_atm_call_iv": call_iv,
         "live_atm_put_iv": put_iv,
+        "live_atm_call_bid_price": call_bid,
+        "live_atm_call_ask_price": call_ask,
+        "live_atm_put_bid_price": put_bid,
+        "live_atm_put_ask_price": put_ask,
         "live_atm_iv_source": "dhan:optionchain" if atm_iv is not None else None,
         "live_atm_call_ltp": atm.get("ce_ltp") if atm else None,
         "live_atm_put_ltp": atm.get("pe_ltp") if atm else None,

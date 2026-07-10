@@ -1229,6 +1229,11 @@ def _kite_option_summary_from_quotes(
     call_iv = _kite_leg_iv(ce_quote, spot, strike, expiry, trade_date, risk_free_rate, "CE")
     put_iv = _kite_leg_iv(pe_quote, spot, strike, expiry, trade_date, risk_free_rate, "PE")
     atm_iv = _average_available([call_iv, put_iv])
+    call_bid, call_ask = _quote_bid_ask(ce_quote)
+    put_bid, put_ask = _quote_bid_ask(pe_quote)
+    call_spread = _bid_ask_spread_pct(call_bid, call_ask)
+    put_spread = _bid_ask_spread_pct(put_bid, put_ask)
+    spread_values = [value for value in (call_spread, put_spread) if value is not None]
     call_volume = _kite_quote_volume(ce_quote)
     put_volume = _kite_quote_volume(pe_quote)
     volumes = [volume for volume in (call_volume, put_volume) if volume is not None and volume > 0]
@@ -1259,12 +1264,45 @@ def _kite_option_summary_from_quotes(
         "live_atm_iv_source": "kite:quote:calculated-iv" if atm_iv is not None else None,
         "live_atm_call_ltp": _coerce_float(ce_quote.get("last_price")) if ce_quote else None,
         "live_atm_put_ltp": _coerce_float(pe_quote.get("last_price")) if pe_quote else None,
+        "live_atm_call_bid_price": call_bid,
+        "live_atm_call_ask_price": call_ask,
+        "live_atm_put_bid_price": put_bid,
+        "live_atm_put_ask_price": put_ask,
+        "live_atm_call_bid_ask_spread_pct": call_spread,
+        "live_atm_put_bid_ask_spread_pct": put_spread,
+        "bid_ask_spread_pct": max(spread_values) if spread_values else None,
         "live_atm_call_volume": call_volume,
         "live_atm_put_volume": put_volume,
         "live_atm_option_volume": atm_volume,
         "live_atm_call_oi": _coerce_int(ce_quote.get("oi")) if ce_quote else None,
         "live_atm_put_oi": _coerce_int(pe_quote.get("oi")) if pe_quote else None,
     }
+
+
+def _quote_bid_ask(quote: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    if not quote:
+        return None, None
+    depth = quote.get("depth") or {}
+    buy = depth.get("buy") or []
+    sell = depth.get("sell") or []
+    bid = _coerce_float((buy[0] or {}).get("price")) if buy else None
+    ask = _coerce_float((sell[0] or {}).get("price")) if sell else None
+    return bid, ask
+
+
+def _bid_ask_spread_pct(bid: Any, ask: Any) -> float | None:
+    bid_value = _coerce_float(bid)
+    ask_value = _coerce_float(ask)
+    if (
+        bid_value is None
+        or ask_value is None
+        or bid_value <= 0
+        or ask_value <= 0
+        or ask_value < bid_value
+    ):
+        return None
+    midpoint = (ask_value + bid_value) / 2.0
+    return ((ask_value - bid_value) / midpoint) * 100.0 if midpoint > 0 else None
 
 
 def _kite_leg_iv(
@@ -1490,6 +1528,7 @@ def _live_quote_payload(
         if summary_payload.get("provider"):
             payload["live_option_provider"] = summary_payload.pop("provider")
         payload.update(summary_payload)
+        _attach_bid_ask_spread_metrics(payload)
         payload["avg_option_volume"] = option_summary["live_option_volume"]
         payload["avg_option_volume_source"] = option_summary["live_option_volume_source"]
         payload["avg_option_volume_kind"] = option_summary["live_option_volume_kind"]
@@ -1514,6 +1553,24 @@ def _live_quote_payload(
     if base.get("iv_slope_3060") is not None:
         payload.setdefault("iv_slope_3060_source", "symbol_daily_metrics")
     return payload
+
+
+def _attach_bid_ask_spread_metrics(payload: dict[str, Any]) -> None:
+    call_spread = _bid_ask_spread_pct(
+        payload.get("live_atm_call_bid_price"),
+        payload.get("live_atm_call_ask_price"),
+    )
+    put_spread = _bid_ask_spread_pct(
+        payload.get("live_atm_put_bid_price"),
+        payload.get("live_atm_put_ask_price"),
+    )
+    if call_spread is not None:
+        payload["live_atm_call_bid_ask_spread_pct"] = call_spread
+    if put_spread is not None:
+        payload["live_atm_put_bid_ask_spread_pct"] = put_spread
+    spread_values = [value for value in (call_spread, put_spread) if value is not None]
+    if spread_values:
+        payload["bid_ask_spread_pct"] = max(spread_values)
 
 
 def _preserve_eod_values(payload: dict[str, Any], base: dict[str, Any], keys: list[str]) -> None:

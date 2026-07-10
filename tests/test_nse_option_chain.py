@@ -25,8 +25,18 @@ def test_normalize_option_chain_summary_sums_ce_and_pe_volume() -> None:
             "data": [
                 {
                     "strikePrice": 1360,
-                    "CE": {"totalTradedVolume": 10, "impliedVolatility": 20},
-                    "PE": {"totalTradedVolume": 20, "impliedVolatility": 30},
+                    "CE": {
+                        "totalTradedVolume": 10,
+                        "impliedVolatility": 20,
+                        "bidprice": 12.1,
+                        "askPrice": 12.8,
+                    },
+                    "PE": {
+                        "totalTradedVolume": 20,
+                        "impliedVolatility": 30,
+                        "bidprice": 10.1,
+                        "askPrice": 10.8,
+                    },
                 },
                 {
                     "strikePrice": 1370,
@@ -47,6 +57,10 @@ def test_normalize_option_chain_summary_sums_ce_and_pe_volume() -> None:
     assert summary["live_atm_iv"] == 0.25
     assert summary["live_atm_call_iv"] == 0.20
     assert summary["live_atm_put_iv"] == 0.30
+    assert summary["live_atm_call_bid_price"] == 12.1
+    assert summary["live_atm_call_ask_price"] == 12.8
+    assert summary["live_atm_put_bid_price"] == 10.1
+    assert summary["live_atm_put_ask_price"] == 10.8
 
 
 def test_normalize_option_chain_payload_matches_live_chain_shape() -> None:
