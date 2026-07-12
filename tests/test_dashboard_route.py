@@ -70,10 +70,20 @@ def test_golden_strategy_filter_uses_call_or_put_forward_factor() -> None:
 def test_bid_ask_spread_filter_uses_percent_points() -> None:
     filters = {"bid_ask_spread_pct": {"max": 5}}
 
-    assert _matches_numeric_filters({"bid_ask_spread_pct": 4.99}, filters)
-    assert not _matches_numeric_filters({"bid_ask_spread_pct": 5.0}, filters)
-    assert not _matches_numeric_filters({"bid_ask_spread_pct": 5.01}, filters)
+    assert _matches_numeric_filters({"bid_ask_spread_pct": 4.99, "bid_ask_spread_dte": 60}, filters)
+    assert _matches_numeric_filters(
+        {
+            "bid_ask_spread_pct": 2.0,
+            "bid_ask_spread_dte": 60,
+            "live_60d_atm_call_bid_ask_spread_pct": 10.0,
+            "live_60d_atm_put_bid_ask_spread_pct": 2.0,
+        },
+        filters,
+    )
+    assert not _matches_numeric_filters({"bid_ask_spread_pct": 5.0, "bid_ask_spread_dte": 60}, filters)
+    assert not _matches_numeric_filters({"bid_ask_spread_pct": 5.01, "bid_ask_spread_dte": 60}, filters)
     assert _matches_numeric_filters({}, filters)
+    assert _matches_numeric_filters({"bid_ask_spread_pct": 5.01}, filters)
 
 
 def test_dashboard_post_market_live_db_fallback_keeps_spread_filter() -> None:
@@ -88,6 +98,7 @@ def test_dashboard_post_market_live_db_fallback_keeps_spread_filter() -> None:
                 "ABC": {
                     "symbol": "ABC",
                     "bid_ask_spread_pct": 4.5,
+                    "bid_ask_spread_dte": 56,
                     "snapshot_time": "2026-07-09T15:59:00+05:30",
                 }
             }

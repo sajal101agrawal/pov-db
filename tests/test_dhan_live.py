@@ -77,6 +77,10 @@ def test_dhan_expiry_summaries_preserve_all_live_iv_terms() -> None:
         "live_atm_iv": 0.20,
         "live_atm_call_iv": 0.21,
         "live_atm_put_iv": 0.19,
+        "live_atm_call_bid_price": 10,
+        "live_atm_call_ask_price": 12,
+        "live_atm_put_bid_price": 9,
+        "live_atm_put_ask_price": 11,
         "live_atm_option_volume": 30,
     }
     second = {
@@ -87,6 +91,10 @@ def test_dhan_expiry_summaries_preserve_all_live_iv_terms() -> None:
         "live_atm_iv": 0.25,
         "live_atm_call_iv": 0.26,
         "live_atm_put_iv": 0.24,
+        "live_atm_call_bid_price": 95,
+        "live_atm_call_ask_price": 105,
+        "live_atm_put_bid_price": 99,
+        "live_atm_put_ask_price": 101,
         "live_atm_option_volume": 40,
     }
 
@@ -97,6 +105,10 @@ def test_dhan_expiry_summaries_preserve_all_live_iv_terms() -> None:
     assert [item["expiry"] for item in combined["live_iv_terms"]] == ["2026-06-25", "2026-07-30"]
     assert [item["atm_iv"] for item in combined["live_iv_terms"]] == [0.20, 0.25]
     assert [item["option_volume"] for item in combined["live_iv_terms"]] == [100, 200]
+    assert combined["live_iv_terms"][1]["call_bid_price"] == 95
+    assert combined["live_iv_terms"][1]["call_ask_price"] == 105
+    assert combined["live_iv_terms"][1]["put_bid_price"] == 99
+    assert combined["live_iv_terms"][1]["put_ask_price"] == 101
     assert combined["live_iv_terms"][0]["preferred_strike"] == 1000
     assert combined["live_iv_terms"][0]["same_strike_used"] is True
     assert combined["live_iv_terms"][0]["strike_source"] == "preferred_same_strike"

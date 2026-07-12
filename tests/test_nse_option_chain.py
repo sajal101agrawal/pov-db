@@ -7,8 +7,12 @@ from datetime import date
 import app.services.live as live_service
 from app.core.config import Settings
 from app.services.live import _live_forward_metrics, selected_live_symbols
-from app.sources.nse_option_chain import normalize_option_chain_payload, normalize_option_chain_summary
 from app.sources.nse_option_chain import _format_expiry
+from app.sources.nse_option_chain import (
+    _combine_expiry_summaries,
+    normalize_option_chain_payload,
+    normalize_option_chain_summary,
+)
 
 
 def test_format_expiry_for_nse_v3() -> None:
@@ -104,6 +108,45 @@ def test_normalize_option_chain_payload_matches_live_chain_shape() -> None:
     assert chain["strikes"][0]["ce"]["last_price"] == 12.5
     assert chain["strikes"][0]["ce"]["implied_volatility"] == 0.20
     assert chain["strikes"][0]["pe"]["volume"] == 20
+
+
+def test_nse_expiry_summaries_preserve_bid_ask_in_live_iv_terms() -> None:
+    first = {
+        "symbol": "RELIANCE",
+        "provider": "nse",
+        "live_option_volume": 100,
+        "live_option_expiry": "26-Jun-2026",
+        "live_option_expiry_date": date(2026, 6, 26),
+        "live_atm_strike": 1000,
+        "live_atm_iv": 0.20,
+        "live_atm_call_iv": 0.21,
+        "live_atm_put_iv": 0.19,
+        "live_atm_call_bid_price": 10,
+        "live_atm_call_ask_price": 12,
+        "live_atm_put_bid_price": 9,
+        "live_atm_put_ask_price": 11,
+    }
+    second = {
+        **first,
+        "live_option_volume": 200,
+        "live_option_expiry": "31-Jul-2026",
+        "live_option_expiry_date": date(2026, 7, 31),
+        "live_atm_iv": 0.25,
+        "live_atm_call_iv": 0.26,
+        "live_atm_put_iv": 0.24,
+        "live_atm_call_bid_price": 95,
+        "live_atm_call_ask_price": 105,
+        "live_atm_put_bid_price": 99,
+        "live_atm_put_ask_price": 101,
+    }
+
+    combined = _combine_expiry_summaries("RELIANCE", [first, second])
+
+    assert combined is not None
+    assert combined["live_iv_terms"][1]["call_bid_price"] == 95
+    assert combined["live_iv_terms"][1]["call_ask_price"] == 105
+    assert combined["live_iv_terms"][1]["put_bid_price"] == 99
+    assert combined["live_iv_terms"][1]["put_ask_price"] == 101
 
 
 def test_live_forward_metrics_use_live_term_structure() -> None:

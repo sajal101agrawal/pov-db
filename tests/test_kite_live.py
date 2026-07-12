@@ -198,7 +198,7 @@ def test_kite_option_summary_prefers_bid_ask_mid_over_ltp_for_iv() -> None:
         0.10 / put_mid * 100,
         rel_tol=1e-5,
     )
-    assert summary["bid_ask_spread_pct"] == max(
+    assert summary["bid_ask_spread_pct"] == min(
         summary["live_atm_call_bid_ask_spread_pct"],
         summary["live_atm_put_bid_ask_spread_pct"],
     )
@@ -374,7 +374,7 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
     ]
 
 
-def test_live_quote_payload_adds_bid_ask_spread_from_option_summary() -> None:
+def test_live_quote_payload_adds_60d_bid_ask_spread_from_option_summary() -> None:
     now = datetime(2026, 6, 1, 10, 0, tzinfo=live_service.IST)
     payload = live_service._live_quote_payload(
         {},
@@ -384,17 +384,39 @@ def test_live_quote_payload_adds_bid_ask_spread_from_option_summary() -> None:
             "live_option_volume": 1000,
             "live_option_volume_source": "nse:option-chain-v3",
             "live_option_volume_kind": "total_contracts_all_strikes",
-            "live_atm_call_bid_price": 95,
-            "live_atm_call_ask_price": 105,
-            "live_atm_put_bid_price": 99,
-            "live_atm_put_ask_price": 101,
+            "live_atm_call_bid_price": 40,
+            "live_atm_call_ask_price": 60,
+            "live_atm_put_bid_price": 45,
+            "live_atm_put_ask_price": 55,
+            "live_iv_terms": [
+                {
+                    "expiry_date": date(2026, 7, 1),
+                    "call_iv": 0.20,
+                    "put_iv": 0.22,
+                    "call_bid_price": 40,
+                    "call_ask_price": 60,
+                    "put_bid_price": 45,
+                    "put_ask_price": 55,
+                },
+                {
+                    "expiry_date": date(2026, 7, 31),
+                    "call_iv": 0.25,
+                    "put_iv": 0.27,
+                    "call_bid_price": 95,
+                    "call_ask_price": 105,
+                    "put_bid_price": 99,
+                    "put_ask_price": 101,
+                },
+            ],
         },
         now,
     )
 
-    assert payload["live_atm_call_bid_ask_spread_pct"] == 10.0
-    assert payload["live_atm_put_bid_ask_spread_pct"] == 2.0
-    assert payload["bid_ask_spread_pct"] == 10.0
+    assert payload["bid_ask_spread_dte"] == 60
+    assert payload["bid_ask_spread_expiry"] == "2026-07-31"
+    assert payload["live_60d_atm_call_bid_ask_spread_pct"] == 10.0
+    assert payload["live_60d_atm_put_bid_ask_spread_pct"] == 2.0
+    assert payload["bid_ask_spread_pct"] == 2.0
 
 
 def test_kite_token_refresh_logs_missing_request_token_once() -> None:

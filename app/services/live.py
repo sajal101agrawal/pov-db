@@ -1270,7 +1270,7 @@ def _kite_option_summary_from_quotes(
         "live_atm_put_ask_price": put_ask,
         "live_atm_call_bid_ask_spread_pct": call_spread,
         "live_atm_put_bid_ask_spread_pct": put_spread,
-        "bid_ask_spread_pct": max(spread_values) if spread_values else None,
+        "bid_ask_spread_pct": min(spread_values) if spread_values else None,
         "live_atm_call_volume": call_volume,
         "live_atm_put_volume": put_volume,
         "live_atm_option_volume": atm_volume,
@@ -1528,7 +1528,7 @@ def _live_quote_payload(
         if summary_payload.get("provider"):
             payload["live_option_provider"] = summary_payload.pop("provider")
         payload.update(summary_payload)
-        _attach_bid_ask_spread_metrics(payload)
+        _attach_bid_ask_spread_metrics(payload, now.date())
         payload["avg_option_volume"] = option_summary["live_option_volume"]
         payload["avg_option_volume_source"] = option_summary["live_option_volume_source"]
         payload["avg_option_volume_kind"] = option_summary["live_option_volume_kind"]
@@ -1555,22 +1555,74 @@ def _live_quote_payload(
     return payload
 
 
-def _attach_bid_ask_spread_metrics(payload: dict[str, Any]) -> None:
-    call_spread = _bid_ask_spread_pct(
-        payload.get("live_atm_call_bid_price"),
-        payload.get("live_atm_call_ask_price"),
-    )
-    put_spread = _bid_ask_spread_pct(
-        payload.get("live_atm_put_bid_price"),
-        payload.get("live_atm_put_ask_price"),
-    )
-    if call_spread is not None:
-        payload["live_atm_call_bid_ask_spread_pct"] = call_spread
-    if put_spread is not None:
-        payload["live_atm_put_bid_ask_spread_pct"] = put_spread
+def _attach_bid_ask_spread_metrics(payload: dict[str, Any], trade_date: date) -> None:
+    for key in (
+        "bid_ask_spread_pct",
+        "bid_ask_spread_dte",
+        "bid_ask_spread_expiry",
+        "live_60d_atm_call_bid_price",
+        "live_60d_atm_call_ask_price",
+        "live_60d_atm_put_bid_price",
+        "live_60d_atm_put_ask_price",
+        "live_60d_atm_call_bid_ask_spread_pct",
+        "live_60d_atm_put_bid_ask_spread_pct",
+    ):
+        payload.pop(key, None)
+
+    term = _bid_ask_spread_term(payload, trade_date)
+    if not term:
+        return
+
+    call_bid = term.get("call_bid_price")
+    call_ask = term.get("call_ask_price")
+    put_bid = term.get("put_bid_price")
+    put_ask = term.get("put_ask_price")
+    call_spread = _bid_ask_spread_pct(call_bid, call_ask)
+    put_spread = _bid_ask_spread_pct(put_bid, put_ask)
     spread_values = [value for value in (call_spread, put_spread) if value is not None]
-    if spread_values:
-        payload["bid_ask_spread_pct"] = max(spread_values)
+    if not spread_values:
+        return
+
+    expiry_date = _coerce_date(term.get("expiry_date") or term.get("expiry"))
+    dte = _coerce_int(term.get("dte"))
+    if dte is None and expiry_date is not None:
+        dte = (expiry_date - trade_date).days
+
+    payload["live_60d_atm_call_bid_price"] = call_bid
+    payload["live_60d_atm_call_ask_price"] = call_ask
+    payload["live_60d_atm_put_bid_price"] = put_bid
+    payload["live_60d_atm_put_ask_price"] = put_ask
+    if call_spread is not None:
+        payload["live_60d_atm_call_bid_ask_spread_pct"] = call_spread
+    if put_spread is not None:
+        payload["live_60d_atm_put_bid_ask_spread_pct"] = put_spread
+    payload["bid_ask_spread_pct"] = min(spread_values)
+    if dte is not None:
+        payload["bid_ask_spread_dte"] = dte
+    if expiry_date is not None:
+        payload["bid_ask_spread_expiry"] = expiry_date.isoformat()
+
+
+def _bid_ask_spread_term(payload: dict[str, Any], trade_date: date) -> dict[str, Any] | None:
+    terms = payload.get("live_iv_terms")
+    if not isinstance(terms, list) or len(terms) < 2:
+        return None
+
+    sortable_terms: list[tuple[int, date, dict[str, Any]]] = []
+    fallback_date = date.max
+    for index, item in enumerate(terms):
+        if not isinstance(item, dict):
+            continue
+        expiry_date = _coerce_date(item.get("expiry_date") or item.get("expiry"))
+        dte = _coerce_int(item.get("dte"))
+        if dte is None and expiry_date is not None:
+            dte = (expiry_date - trade_date).days
+        sortable_terms.append((dte if dte is not None else index, expiry_date or fallback_date, item))
+
+    if len(sortable_terms) < 2:
+        return None
+    sortable_terms.sort(key=lambda item: (item[0], item[1]))
+    return sortable_terms[1][2]
 
 
 def _preserve_eod_values(payload: dict[str, Any], base: dict[str, Any], keys: list[str]) -> None:

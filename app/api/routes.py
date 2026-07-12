@@ -1323,6 +1323,8 @@ def _matches_numeric_filters(payload: dict[str, Any], numeric_filters: dict[str,
             if field == "max_fwdfct_3060"
             else payload.get(field)
         )
+        if field == "bid_ask_spread_pct" and payload.get("bid_ask_spread_dte") is None:
+            continue
         if value is None:
             if field == "bid_ask_spread_pct":
                 continue
@@ -1924,12 +1926,20 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         "dte_90",
         "option_volume_60d",
         "bid_ask_spread_pct",
+        "bid_ask_spread_dte",
+        "bid_ask_spread_expiry",
         "live_atm_call_bid_price",
         "live_atm_call_ask_price",
         "live_atm_put_bid_price",
         "live_atm_put_ask_price",
         "live_atm_call_bid_ask_spread_pct",
         "live_atm_put_bid_ask_spread_pct",
+        "live_60d_atm_call_bid_price",
+        "live_60d_atm_call_ask_price",
+        "live_60d_atm_put_bid_price",
+        "live_60d_atm_put_ask_price",
+        "live_60d_atm_call_bid_ask_spread_pct",
+        "live_60d_atm_put_bid_ask_spread_pct",
         "expiry_30d",
         "expiry_60d",
         "expiry_90d",
@@ -2031,12 +2041,20 @@ def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dic
         "avg_option_volume",
         "option_volume_60d",
         "bid_ask_spread_pct",
+        "bid_ask_spread_dte",
+        "bid_ask_spread_expiry",
         "live_atm_call_bid_price",
         "live_atm_call_ask_price",
         "live_atm_put_bid_price",
         "live_atm_put_ask_price",
         "live_atm_call_bid_ask_spread_pct",
         "live_atm_put_bid_ask_spread_pct",
+        "live_60d_atm_call_bid_price",
+        "live_60d_atm_call_ask_price",
+        "live_60d_atm_put_bid_price",
+        "live_60d_atm_put_ask_price",
+        "live_60d_atm_call_bid_ask_spread_pct",
+        "live_60d_atm_put_bid_ask_spread_pct",
         "avg_option_volume_source",
         "avg_option_volume_kind",
         "live_option_provider",
