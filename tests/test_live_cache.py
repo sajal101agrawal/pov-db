@@ -182,6 +182,60 @@ def test_live_symbols_uses_database_fallback_when_aggregate_cache_is_empty(monke
     ]
 
 
+def test_live_symbols_deduplicates_aggregate_cache_by_latest_snapshot(monkeypatch) -> None:
+    class FakeCache:
+        redis = object()
+
+        async def get_live_symbols(self) -> list[dict]:
+            return [
+                {
+                    "symbol": "ABC",
+                    "current_price": 100,
+                    "snapshot_time": "2026-07-08T10:00:00+05:30",
+                },
+                {
+                    "symbol": "XYZ",
+                    "current_price": 200,
+                    "snapshot_time": "2026-07-08T10:01:00+05:30",
+                },
+                {
+                    "symbol": "ABC",
+                    "current_price": 123,
+                    "snapshot_time": "2026-07-08T10:02:00+05:30",
+                },
+            ]
+
+    class FakeRepo:
+        async def latest_live_metrics(self) -> dict[str, dict]:
+            raise AssertionError("database fallback should not run when cache has live rows")
+
+    async def passthrough(symbol: str, payload: dict, repo: object) -> dict:
+        return payload
+
+    monkeypatch.setattr(routes, "_refresh_live_payload_forward_percentiles", passthrough)
+
+    result = asyncio.run(
+        routes.live_symbols(
+            Settings(),
+            FakeRepo(),  # type: ignore[arg-type]
+            FakeCache(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert result == [
+        {
+            "symbol": "ABC",
+            "current_price": 123,
+            "snapshot_time": "2026-07-08T10:02:00+05:30",
+        },
+        {
+            "symbol": "XYZ",
+            "current_price": 200,
+            "snapshot_time": "2026-07-08T10:01:00+05:30",
+        },
+    ]
+
+
 def test_market_window_blocks_worker_after_close_and_weekends() -> None:
     settings = Settings(live_market_start_ist="09:00", live_market_end_ist="16:00")
 

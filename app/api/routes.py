@@ -1344,6 +1344,30 @@ def _matches_numeric_filters(payload: dict[str, Any], numeric_filters: dict[str,
     return True
 
 
+def _live_snapshot_timestamp(payload: dict[str, Any]) -> float:
+    value = payload.get("snapshot_time")
+    if not value:
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return float("-inf")
+
+
+def _dedupe_live_payloads(payloads: list[dict]) -> list[dict]:
+    latest_by_symbol: dict[str, dict] = {}
+    for item in payloads:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        current = latest_by_symbol.get(symbol)
+        if current is None or _live_snapshot_timestamp(item) >= _live_snapshot_timestamp(current):
+            latest_by_symbol[symbol] = item
+    return [latest_by_symbol[symbol] for symbol in sorted(latest_by_symbol)]
+
+
 async def _live_payloads_by_symbol(
     cache_service: CacheService,
     repo: MarketRepository,
@@ -1365,7 +1389,7 @@ async def _live_payloads_by_symbol(
             if live:
                 redis_payloads.append(live)
 
-    for item in redis_payloads:
+    for item in _dedupe_live_payloads(redis_payloads):
         symbol = str(item.get("symbol") or "").upper()
         if symbol:
             live_by_symbol[symbol] = item
@@ -2460,7 +2484,7 @@ async def live_symbols(
     repo: MarketRepository = Depends(repository),
     cache_service: CacheService = Depends(cache),
 ) -> list[dict]:
-    payload = await cache_service.get_live_symbols()
+    payload = _dedupe_live_payloads(await cache_service.get_live_symbols())
     if payload:
         return [
             await _refresh_live_payload_forward_percentiles(
@@ -2481,7 +2505,7 @@ async def live_symbols(
             for item in latest_metrics
         ]
     await fetch_and_store_live_quotes(settings, repo, cache_service.redis)
-    payload = await cache_service.get_live_symbols()
+    payload = _dedupe_live_payloads(await cache_service.get_live_symbols())
     if payload:
         return [
             await _refresh_live_payload_forward_percentiles(
