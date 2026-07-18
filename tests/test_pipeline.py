@@ -5,7 +5,7 @@ from datetime import date
 
 from app.core.config import Settings
 from app.etl.pipeline import Pipeline
-from app.sources.models import EquityBhavcopyRow, OptionBhavcopyRow
+from app.sources.models import EquityBar, EquityBhavcopyRow, OptionBhavcopyRow
 
 
 class FakeBhavcopySource:
@@ -105,3 +105,76 @@ def test_pipeline_can_continue_when_corporate_action_sync_is_lenient() -> None:
     assert result["equity_rows"] == 1
     assert result["corporate_action_sync_status"] == "failed"
     assert result["corporate_action_sync_error"]["type"] == "RuntimeError"
+
+
+def test_pipeline_loads_index_ohlc_from_yahoo_before_computing_metrics() -> None:
+    trade_date = date(2026, 7, 7)
+
+    class IndexBhavcopySource(FakeBhavcopySource):
+        async def fetch_fo(self, requested_date: date) -> list[OptionBhavcopyRow]:
+            return [
+                OptionBhavcopyRow(
+                    symbol="NIFTY",
+                    trade_date=requested_date,
+                    expiry_date=date(2026, 7, 30),
+                    strike_price=25_000.0,
+                    option_type="CE",
+                    instrument_type="OPTIDX",
+                    open=100.0,
+                    high=120.0,
+                    low=90.0,
+                    close=110.0,
+                    settle_price=110.0,
+                    num_contracts=100,
+                    contract_value=1_000.0,
+                    open_interest=1_000,
+                    change_in_oi=10,
+                    source="unit",
+                )
+            ]
+
+        async def fetch_cm(self, requested_date: date) -> list[EquityBhavcopyRow]:
+            return []
+
+    class IndexPriceSource:
+        async def fetch_equity_history(self, symbol: str, start: date, end: date) -> list[EquityBar]:
+            assert symbol == "NIFTY"
+            assert start == trade_date
+            assert end == date(2026, 7, 8)
+            return [
+                EquityBar(
+                    symbol=symbol,
+                    trade_date=trade_date,
+                    open=25_000.0,
+                    high=25_200.0,
+                    low=24_900.0,
+                    close=25_100.0,
+                    volume=0,
+                    source="yahoo:^NSEI",
+                )
+            ]
+
+    class IndexRepository(FakeRepository):
+        def __init__(self) -> None:
+            self.equity_rows: list[EquityBhavcopyRow | EquityBar] = []
+
+        async def upsert_equity_rows(self, rows: list[EquityBhavcopyRow | EquityBar]) -> int:
+            self.equity_rows = rows
+            return len(rows)
+
+    repo = IndexRepository()
+    pipeline = Pipeline(
+        settings=Settings(pipeline_compute_concurrency=1),
+        repository=repo,  # type: ignore[arg-type]
+        bhavcopy_source=IndexBhavcopySource(),  # type: ignore[arg-type]
+        rates=FakeRates(),  # type: ignore[arg-type]
+        index_price_source=IndexPriceSource(),  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(pipeline.run_for_date(trade_date, finalize=False))
+
+    assert result["index_symbols"] == 1
+    assert result["index_equity_rows"] == 1
+    assert result["index_price_errors"] == []
+    assert repo.equity_rows[0].symbol == "NIFTY"
+    assert repo.equity_rows[0].source == "yahoo:^NSEI"

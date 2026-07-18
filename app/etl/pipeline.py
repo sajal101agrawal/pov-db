@@ -26,6 +26,7 @@ from app.services.corporate_actions import (
 from app.sources.bhavcopy import BhavcopySource
 from app.sources.nse_corporate_actions import NSECorporateActionsClient
 from app.sources.rates import IndiaRiskFreeRateClient
+from app.sources.yahoo import YahooFinanceClient
 
 
 class Pipeline:
@@ -36,12 +37,14 @@ class Pipeline:
         bhavcopy_source: BhavcopySource,
         rates: IndiaRiskFreeRateClient,
         corporate_actions_source: NSECorporateActionsClient | None = None,
+        index_price_source: YahooFinanceClient | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.bhavcopy_source = bhavcopy_source
         self.rates = rates
         self.corporate_actions_source = corporate_actions_source
+        self.index_price_source = index_price_source
 
     async def run_for_date(
         self,
@@ -85,8 +88,21 @@ class Pipeline:
             fo_rows = [row for row in fo_rows if row.symbol in allowed]
             cm_rows = [row for row in cm_rows if row.symbol in allowed]
 
+        index_symbols = sorted(
+            {row.symbol for row in fo_rows if row.instrument_type == "OPTIDX"}
+        )
+        index_equity_rows, index_price_errors = await _fetch_index_equity_rows(
+            self.index_price_source
+            or YahooFinanceClient(
+                self.settings.source_retry_attempts,
+                self.settings.source_retry_base_delay_seconds,
+                self.settings.source_retry_max_delay_seconds,
+            ),
+            index_symbols,
+            trade_date,
+        )
         option_count = await self.repository.upsert_option_rows(fo_rows)
-        equity_count = await self.repository.upsert_equity_rows(cm_rows)
+        equity_count = await self.repository.upsert_equity_rows([*cm_rows, *index_equity_rows])
         await self.repository.upsert_discovered_symbols(_discovered_symbols(fo_rows, cm_rows))
 
         symbols_for_metrics = sorted({row.symbol for row in fo_rows})
@@ -135,6 +151,9 @@ class Pipeline:
             "trade_date": trade_date.isoformat(),
             "options_rows": option_count,
             "equity_rows": equity_count,
+            "index_symbols": len(index_symbols),
+            "index_equity_rows": len(index_equity_rows),
+            "index_price_errors": index_price_errors,
             "symbols": len(symbols_for_metrics),
             "corporate_actions": len(corporate_actions),
             "corporate_action_sync_status": corporate_action_sync_status,
@@ -388,6 +407,37 @@ class Pipeline:
                 "skip_reason": None,
             }
         )
+
+
+async def _fetch_index_equity_rows(
+    client: YahooFinanceClient,
+    symbols: list[str],
+    trade_date: date,
+) -> tuple[list[Any], list[dict[str, str]]]:
+    if not symbols:
+        return [], []
+
+    results = await asyncio.gather(
+        *[
+            client.fetch_equity_history(symbol, trade_date, trade_date + timedelta(days=1))
+            for symbol in symbols
+        ],
+        return_exceptions=True,
+    )
+    rows = []
+    errors = []
+    for symbol, result in zip(symbols, results, strict=True):
+        if isinstance(result, Exception):
+            errors.append(
+                {
+                    "symbol": symbol,
+                    "type": type(result).__name__,
+                    "message": str(result),
+                }
+            )
+            continue
+        rows.extend(row for row in result if row.trade_date == trade_date)
+    return rows, errors
 
 
 def _expiry_closest_to_target(expiries: list[date], trade_date: date, target_dte: int) -> date | None:
