@@ -551,15 +551,14 @@ async def _fetch_live_option_summaries(
             )
             return await _fetch_nse_live_option_summaries(settings, symbols, baseline)
 
-        incomplete = _incomplete_option_summary_symbols(symbols, kite_summaries)
-        if incomplete:
+        missing = _missing_option_summary_symbols(symbols, kite_summaries)
+        if missing:
             nse_summaries = await _fetch_nse_live_option_summaries(
                 settings,
-                incomplete,
+                missing,
                 baseline,
-                use_baseline_hints=False,
             )
-            return _prefer_more_complete_option_summaries(kite_summaries, nse_summaries)
+            return {**nse_summaries, **kite_summaries}
         return kite_summaries
     if provider != "nse":
         raise ValueError(
@@ -597,71 +596,12 @@ async def _fetch_nse_live_option_summaries(
         return {}
 
 
-def _incomplete_option_summary_symbols(symbols: list[str], summaries: dict[str, dict]) -> list[str]:
+def _missing_option_summary_symbols(symbols: list[str], summaries: dict[str, dict]) -> list[str]:
     return [
         symbol
         for symbol in symbols
-        if not _option_summary_has_two_sided_forward_terms(summaries.get(symbol.upper()))
+        if not summaries.get(symbol.upper())
     ]
-
-
-def _prefer_more_complete_option_summaries(
-    primary: dict[str, dict],
-    fallback: dict[str, dict],
-) -> dict[str, dict]:
-    merged = dict(primary)
-    for symbol, fallback_summary in fallback.items():
-        current = merged.get(symbol)
-        if _option_summary_forward_completeness_score(
-            fallback_summary
-        ) > _option_summary_forward_completeness_score(current):
-            merged[symbol] = fallback_summary
-    return merged
-
-
-def _option_summary_has_two_sided_forward_terms(summary: dict[str, Any] | None) -> bool:
-    score = _option_summary_forward_completeness_score(summary)
-    return score[0] >= 2
-
-
-def _option_summary_forward_completeness_score(summary: dict[str, Any] | None) -> tuple[int, int, int]:
-    terms = _option_summary_terms(summary)
-    first_two = terms[:2]
-    two_sided_terms = sum(
-        1
-        for term in first_two
-        if _positive_float(term.get("call_iv")) is not None
-        and _positive_float(term.get("put_iv")) is not None
-    )
-    side_values = sum(
-        1
-        for term in first_two
-        for key in ("call_iv", "put_iv")
-        if _positive_float(term.get(key)) is not None
-    )
-    return (two_sided_terms, side_values, len(terms))
-
-
-def _option_summary_terms(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not summary:
-        return []
-    terms = summary.get("live_iv_terms")
-    if isinstance(terms, list):
-        return [term for term in terms if isinstance(term, dict)]
-    if (
-        summary.get("live_atm_iv") is not None
-        or summary.get("live_atm_call_iv") is not None
-        or summary.get("live_atm_put_iv") is not None
-        or summary.get("live_option_volume") is not None
-    ):
-        return [
-            {
-                "atm_iv": summary.get("live_atm_iv"),
-                "call_iv": summary.get("live_atm_call_iv"),
-                "put_iv": summary.get("live_atm_put_iv"),
-            }
-        ]
-    return []
 
 
 async def _fetch_dhan_live_option_summaries(
@@ -784,14 +724,7 @@ async def _fetch_kite_live_option_summaries(
                     preferred_strike = request["strike"]
                 requests.append(request)
 
-    quote_keys = sorted(
-        {
-            key
-            for request in requests
-            for key in (request.get("quote_keys") or [request.get("ce_key"), request.get("pe_key")])
-            if key
-        }
-    )
+    quote_keys = _kite_option_summary_quote_keys(requests)
     option_quotes = await _kite_quote_many(settings, client, quote_keys)
     summaries_by_symbol: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in selected}
     for request in requests:
@@ -1169,6 +1102,28 @@ def _kite_atm_option_request(
     }
 
 
+def _kite_option_summary_quote_keys(requests: list[dict[str, Any]]) -> list[str]:
+    """Request every strike only for the near and far volume terms."""
+    quote_keys: set[str] = set()
+    requests_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for request in requests:
+        request["volume_quote_keys"] = []
+        requests_by_symbol.setdefault(request["symbol"], []).append(request)
+        quote_keys.update(
+            key
+            for key in (request.get("ce_key"), request.get("pe_key"))
+            if key
+        )
+
+    for symbol_requests in requests_by_symbol.values():
+        for request in sorted(symbol_requests, key=lambda item: item["expiry"])[:2]:
+            volume_quote_keys = [key for key in request.get("quote_keys") or [] if key]
+            request["volume_quote_keys"] = volume_quote_keys
+            quote_keys.update(volume_quote_keys)
+
+    return sorted(quote_keys)
+
+
 def _kite_option_row(rows: list[dict[str, Any]], strike: float, option_type: str) -> dict[str, Any] | None:
     return next(
         (
@@ -1238,9 +1193,12 @@ def _kite_option_summary_from_quotes(
     put_volume = _kite_quote_volume(pe_quote)
     volumes = [volume for volume in (call_volume, put_volume) if volume is not None and volume > 0]
     atm_volume = sum(volumes) if volumes else None
+    volume_quote_keys = request.get("volume_quote_keys")
     total_volume = _kite_total_quote_volume(
         data,
-        request.get("quote_keys") or [request.get("ce_key"), request.get("pe_key")],
+        volume_quote_keys
+        if volume_quote_keys is not None
+        else request.get("quote_keys") or [request.get("ce_key"), request.get("pe_key")],
     )
     if atm_iv is None and total_volume is None:
         return None

@@ -139,6 +139,50 @@ def test_term_structure_live_overlay_uses_snapshot_date() -> None:
     ]
 
 
+def test_term_structure_live_overlay_preserves_signal_values_when_live_is_partial() -> None:
+    result = {
+        "symbol": "COALINDIA",
+        "current": {
+            "trade_date": "2026-07-10",
+            "call_iv_30": 0.19,
+            "call_iv_60": 0.16,
+            "call_fwdfct_3060": 0.50,
+            "call_fwdfct_3060_percentile": 92.1,
+            "put_fwdfct_3060": -0.26,
+            "iv_90": 0.30,
+        },
+        "history": [
+            {
+                "trade_date": "2026-07-10",
+                "call_iv_30": 0.19,
+                "call_iv_60": 0.16,
+                "call_fwdfct_3060": 0.50,
+                "put_fwdfct_3060": -0.26,
+                "iv_90": 0.30,
+            }
+        ],
+    }
+    live = {
+        "snapshot_time": "2026-07-13T10:11:02.975027+05:30",
+        "iv_term_structure_source": "kite:quote:calculated-iv",
+        "call_iv_30": None,
+        "call_iv_60": 0.17,
+        "call_fwdfct_3060": None,
+        "put_fwdfct_3060": -0.30,
+        "iv_90": None,
+    }
+
+    overlaid = _overlay_live_term_structure(result, live)
+    current = overlaid["current"]
+
+    assert current["trade_date"] == "2026-07-13"
+    assert current["call_iv_30"] == 0.19
+    assert current["call_iv_60"] == 0.17
+    assert current["call_fwdfct_3060"] == 0.50
+    assert current["put_fwdfct_3060"] == -0.30
+    assert current["iv_90"] is None
+
+
 def test_live_percentile_refresh_includes_side_specific_iv_terms() -> None:
     history = [
         {

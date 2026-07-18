@@ -1994,9 +1994,7 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         "live_raw_call_iv_term_structure",
         "live_raw_put_iv_term_structure",
     ]
-    for key in live_keys:
-        if key in live:
-            current[key] = live[key]
+    _apply_live_overlay_values(current, live, live_keys)
     _refresh_current_forward_factor_percentiles(history, current)
     snapshot_time = live.get("snapshot_time")
     trade_date = _date_from_snapshot(snapshot_time)
@@ -2016,6 +2014,46 @@ def _overlay_live_term_structure(result: dict[str, Any], live: dict[str, Any]) -
         "current": current,
         "history": history,
     }
+
+
+PRESERVE_ON_NULL_LIVE_OVERLAY_FIELDS = {
+    "iv_30",
+    "iv_60",
+    "call_iv_30",
+    "call_iv_60",
+    "put_iv_30",
+    "put_iv_60",
+    "fwdv_3060",
+    "fwdfct_3060",
+    "call_fwdfct_3060",
+    "put_fwdfct_3060",
+    "max_fwdfct_3060",
+    "fev_30",
+    "iv_slope_3060",
+    "call_slope_3060",
+    "put_slope_3060",
+    "call_fwdfct_3060_percentile",
+    "put_fwdfct_3060_percentile",
+    "call_iv_30_percentile",
+    "call_iv_60_percentile",
+    "put_iv_30_percentile",
+    "put_iv_60_percentile",
+    "call_slope_3060_percentile",
+    "put_slope_3060_percentile",
+}
+
+
+def _apply_live_overlay_values(target: dict[str, Any], live: dict[str, Any], keys: list[str]) -> None:
+    for key in keys:
+        if key not in live:
+            continue
+        if (
+            live[key] is None
+            and key in PRESERVE_ON_NULL_LIVE_OVERLAY_FIELDS
+            and target.get(key) is not None
+        ):
+            continue
+        target[key] = live[key]
 
 
 def _overlay_live_history(history: list[dict], live: dict[str, Any]) -> list[dict]:

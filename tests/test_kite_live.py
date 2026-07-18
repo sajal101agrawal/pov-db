@@ -316,6 +316,51 @@ def test_kite_option_request_uses_preferred_same_strike_for_far_expiry() -> None
     ]
 
 
+def test_kite_option_summary_requests_all_strikes_for_near_and_far_terms_only() -> None:
+    first_expiry = date(2026, 7, 28)
+    second_expiry = date(2026, 8, 25)
+    third_expiry = date(2026, 9, 29)
+    requests = [
+        {
+            "symbol": "ABC",
+            "expiry": first_expiry,
+            "ce_key": "NFO:ABCJUL100CE",
+            "pe_key": "NFO:ABCJUL100PE",
+            "quote_keys": ["NFO:ABCJUL90CE", "NFO:ABCJUL100CE", "NFO:ABCJUL100PE"],
+        },
+        {
+            "symbol": "ABC",
+            "expiry": second_expiry,
+            "ce_key": "NFO:ABCAUG100CE",
+            "pe_key": "NFO:ABCAUG100PE",
+            "quote_keys": ["NFO:ABCAUG90CE", "NFO:ABCAUG100CE", "NFO:ABCAUG100PE"],
+        },
+        {
+            "symbol": "ABC",
+            "expiry": third_expiry,
+            "ce_key": "NFO:ABCSEP100CE",
+            "pe_key": "NFO:ABCSEP100PE",
+            "quote_keys": ["NFO:ABCSEP90CE", "NFO:ABCSEP100CE", "NFO:ABCSEP100PE"],
+        },
+    ]
+
+    quote_keys = live_service._kite_option_summary_quote_keys(requests)
+
+    assert requests[0]["volume_quote_keys"] == requests[0]["quote_keys"]
+    assert requests[1]["volume_quote_keys"] == requests[1]["quote_keys"]
+    assert requests[2]["volume_quote_keys"] == []
+    assert quote_keys == [
+        "NFO:ABCAUG100CE",
+        "NFO:ABCAUG100PE",
+        "NFO:ABCAUG90CE",
+        "NFO:ABCJUL100CE",
+        "NFO:ABCJUL100PE",
+        "NFO:ABCJUL90CE",
+        "NFO:ABCSEP100CE",
+        "NFO:ABCSEP100PE",
+    ]
+
+
 def test_kite_option_request_falls_back_to_closest_far_strike() -> None:
     expiry = date(2026, 8, 25)
     rows = [
@@ -527,7 +572,7 @@ def test_kite_option_summary_provider_falls_back_to_nse_on_failure(monkeypatch) 
     }
 
 
-def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monkeypatch) -> None:
+def test_kite_option_summary_provider_keeps_partial_kite_terms_without_nse(monkeypatch) -> None:
     async def kite_partial(
         settings: Settings,
         repo: object,
@@ -568,35 +613,11 @@ def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monk
             },
         }
 
-    async def nse_success(
-        settings: Settings,
-        symbols: list[str],
-        baseline: dict,
-        use_baseline_hints: bool = True,
-    ) -> dict:
-        assert symbols == ["ABC"]
-        assert use_baseline_hints is False
-        return {
-            "ABC": {
-                "provider": "nse",
-                "bid_ask_spread_pct": 4.8,
-                "live_iv_terms": [
-                    {
-                        "expiry_date": date(2026, 7, 28),
-                        "call_iv": 0.22,
-                        "put_iv": 0.24,
-                    },
-                    {
-                        "expiry_date": date(2026, 8, 25),
-                        "call_iv": 0.23,
-                        "put_iv": 0.25,
-                    },
-                ],
-            }
-        }
+    async def nse_should_not_run(*args, **kwargs) -> dict:
+        raise AssertionError("partial Kite terms must not trigger an NSE fallback")
 
     monkeypatch.setattr(live_service, "_fetch_kite_live_option_summaries", kite_partial)
-    monkeypatch.setattr(live_service, "_fetch_nse_live_option_summaries", nse_success)
+    monkeypatch.setattr(live_service, "_fetch_nse_live_option_summaries", nse_should_not_run)
 
     result = asyncio.run(
         live_service._fetch_live_option_summaries(
@@ -608,10 +629,42 @@ def test_kite_option_summary_provider_supplements_incomplete_terms_with_nse(monk
         )
     )
 
-    assert result["ABC"]["provider"] == "nse"
-    assert result["ABC"]["bid_ask_spread_pct"] == 4.8
+    assert result["ABC"]["provider"] == "kite"
     assert len(result["ABC"]["live_iv_terms"]) == 2
     assert result["OK"]["provider"] == "kite"
+
+
+def test_kite_option_summary_provider_falls_back_for_missing_symbols(monkeypatch) -> None:
+    async def kite_partial(
+        settings: Settings,
+        repo: object,
+        redis: object,
+        symbols: list[str],
+        baseline: dict,
+    ) -> dict:
+        return {"OK": {"provider": "kite", "live_option_volume": 100}}
+
+    async def nse_success(settings: Settings, symbols: list[str], baseline: dict) -> dict:
+        assert symbols == ["ABC"]
+        return {"ABC": {"provider": "nse", "live_option_volume": 200}}
+
+    monkeypatch.setattr(live_service, "_fetch_kite_live_option_summaries", kite_partial)
+    monkeypatch.setattr(live_service, "_fetch_nse_live_option_summaries", nse_success)
+
+    result = asyncio.run(
+        live_service._fetch_live_option_summaries(
+            Settings(live_option_summary_provider="kite"),
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            ["ABC", "OK"],
+            {},
+        )
+    )
+
+    assert result == {
+        "ABC": {"provider": "nse", "live_option_volume": 200},
+        "OK": {"provider": "kite", "live_option_volume": 100},
+    }
 
 
 def test_kite_quote_provider_falls_back_to_yahoo_on_failure(monkeypatch) -> None:
