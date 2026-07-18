@@ -168,8 +168,7 @@ def monthly_expiry_buckets(expiries: list[date]) -> list[date]:
     monthly: dict[tuple[int, int], date] = {}
     for expiry in sorted(expiries):
         monthly[(expiry.year, expiry.month)] = expiry
-    selected = sorted(monthly.values())
-    return selected[:3] if len(selected) >= 3 else sorted(expiries)[:3]
+    return sorted(monthly.values())[:3]
 
 
 def analytics_iv(value: float | None) -> float | None:

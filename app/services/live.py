@@ -18,6 +18,7 @@ from app.services.calculations import (
     iv_slope,
     years_to_expiry,
 )
+from app.services.forward_factors import monthly_expiry_buckets
 from app.sources.dhan import (
     DhanOptionChainClient,
     combine_expiry_summaries,
@@ -1369,7 +1370,9 @@ def _kite_chain_leg(
 
 
 def _closest_expiry(expiries, trade_date, target_dte: int):
-    future = [expiry for expiry in expiries if expiry >= trade_date]
+    future = monthly_expiry_buckets(
+        [expiry for expiry in expiries if expiry >= trade_date]
+    )
     if not future:
         return None
     return min(future, key=lambda expiry: abs((expiry - trade_date).days - target_dte))
@@ -1386,14 +1389,7 @@ def _future_expiry_targets_from_baseline(base: dict[str, Any], trade_date: date)
 
 def _expiry_targets_from_expiries(expiries, trade_date: date) -> list[date]:
     future = sorted({expiry for expiry in expiries if expiry > trade_date})
-    targets = []
-    seen = set()
-    for target_dte in (30, 60, 90):
-        expiry = _closest_expiry(future, trade_date, target_dte)
-        if expiry is not None and expiry not in seen:
-            targets.append(expiry)
-            seen.add(expiry)
-    return targets
+    return monthly_expiry_buckets(future)
 
 
 def _merge_expiry_targets(

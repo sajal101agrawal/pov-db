@@ -91,6 +91,20 @@ def test_monthly_expiry_buckets_collapse_index_weeklies() -> None:
     assert selected == [date(2026, 5, 28), date(2026, 6, 25), date(2026, 7, 30)]
 
 
+def test_monthly_expiry_buckets_do_not_fall_back_to_index_weeklies() -> None:
+    selected = _monthly_expiry_buckets(
+        [
+            date(2026, 5, 14),
+            date(2026, 5, 21),
+            date(2026, 5, 28),
+            date(2026, 6, 4),
+            date(2026, 6, 25),
+        ]
+    )
+
+    assert selected == [date(2026, 5, 28), date(2026, 6, 25)]
+
+
 def test_closest_target_expiry_helper() -> None:
     expiries = [date(2026, 5, 26), date(2026, 6, 30), date(2026, 7, 28)]
     assert _expiry_closest_to_target(expiries, date(2026, 5, 20), 30) == date(2026, 6, 30)

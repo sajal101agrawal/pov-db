@@ -56,7 +56,7 @@ def test_missing_call_leg_does_not_borrow_put_iv_for_call_forward_factor() -> No
     chain = [
         _option(trade_date + timedelta(days=30), 100.0, "CE", 0.30),
         _option(trade_date + timedelta(days=30), 100.0, "PE", 0.20),
-        _option(trade_date + timedelta(days=60), 100.0, "PE", 0.19),
+        _option(trade_date + timedelta(days=61), 100.0, "PE", 0.19),
     ]
 
     metrics = compute_forward_factor_metrics(chain, trade_date, 100.0)

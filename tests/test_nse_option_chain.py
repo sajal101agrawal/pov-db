@@ -7,7 +7,7 @@ from datetime import date
 import app.services.live as live_service
 from app.core.config import Settings
 from app.services.live import _live_forward_metrics, selected_live_symbols
-from app.sources.nse_option_chain import _format_expiry
+from app.sources.nse_option_chain import _format_expiry, _monthly_expiry_targets
 from app.sources.nse_option_chain import (
     _combine_expiry_summaries,
     normalize_option_chain_payload,
@@ -19,6 +19,22 @@ def test_format_expiry_for_nse_v3() -> None:
     assert _format_expiry(date(2026, 5, 26)) == "26-May-2026"
     assert _format_expiry("2026-05-26") == "26-May-2026"
     assert _format_expiry("26-May-2026") == "26-May-2026"
+
+
+def test_nse_monthly_expiry_targets_exclude_index_weeklies() -> None:
+    targets = _monthly_expiry_targets(
+        [
+            "11-Jun-2026",
+            "18-Jun-2026",
+            "25-Jun-2026",
+            "02-Jul-2026",
+            "30-Jul-2026",
+            "06-Aug-2026",
+            "27-Aug-2026",
+        ]
+    )
+
+    assert targets == ["25-Jun-2026", "30-Jul-2026", "27-Aug-2026"]
 
 
 def test_normalize_option_chain_summary_sums_ce_and_pe_volume() -> None:

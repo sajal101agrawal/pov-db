@@ -272,6 +272,25 @@ def test_kite_expiry_targets_skip_expiry_day_contracts() -> None:
     ]
 
 
+def test_kite_expiry_targets_collapse_index_weeklies_to_monthlies() -> None:
+    trade_date = date(2026, 6, 10)
+    rows = [
+        {"expiry": date(2026, 6, 11)},
+        {"expiry": date(2026, 6, 18)},
+        {"expiry": date(2026, 6, 25)},
+        {"expiry": date(2026, 7, 2)},
+        {"expiry": date(2026, 7, 9)},
+        {"expiry": date(2026, 7, 30)},
+        {"expiry": date(2026, 8, 6)},
+        {"expiry": date(2026, 8, 27)},
+        {"expiry": date(2026, 9, 24)},
+    ]
+
+    targets = live_service._kite_expiry_targets(rows, trade_date)
+
+    assert targets == [date(2026, 6, 25), date(2026, 7, 30), date(2026, 8, 27)]
+
+
 def test_future_expiry_targets_from_baseline_skip_expiry_day_and_backfill() -> None:
     trade_date = date(2026, 6, 30)
     base = {

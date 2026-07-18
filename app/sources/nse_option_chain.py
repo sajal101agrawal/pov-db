@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.sources.nse import NSE_HEADERS
+from app.services.forward_factors import monthly_expiry_buckets
 from app.utils.retry import retry_async
 
 
@@ -92,10 +93,12 @@ class NSEOptionChainClient:
             await self._prime_session(client)
             payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
             if payload and expiry == self.discovery_expiry:
-                expiries = ((payload.get("records") or {}).get("expiryDates")) or []
+                expiries = _monthly_expiry_targets(
+                    ((payload.get("records") or {}).get("expiryDates")) or []
+                )
                 if not expiries:
                     return None
-                expiry = str(expiries[0])
+                expiry = expiries[0]
                 payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
         return normalize_option_chain_payload(symbol, payload, expiry)
 
@@ -132,7 +135,7 @@ class NSEOptionChainClient:
         if not expiries or stop_event.is_set():
             return None
         summaries = []
-        for expiry in [str(item) for item in expiries[:3]]:
+        for expiry in _monthly_expiry_targets(expiries):
             payload = await self._fetch_payload(client, semaphore, stop_event, symbol, expiry)
             summary = normalize_option_chain_summary(symbol, payload, expiry)
             if summary:
@@ -358,6 +361,21 @@ def _format_expiry(value: date | str | None) -> str | None:
         return datetime.fromisoformat(text).date().strftime("%d-%b-%Y")
     except ValueError:
         return text
+
+
+def _monthly_expiry_targets(expiries: list[Any]) -> list[str]:
+    parsed_expiries: dict[date, str] = {}
+    fallback = []
+    for value in expiries:
+        text = str(value)
+        parsed = _parse_expiry(text)
+        if parsed is None:
+            fallback.append(text)
+            continue
+        parsed_expiries[parsed] = text
+    if not parsed_expiries:
+        return fallback[:3]
+    return [parsed_expiries[expiry] for expiry in monthly_expiry_buckets(list(parsed_expiries))]
 
 
 def _normalize_nse_leg(leg: dict[str, Any]) -> dict[str, Any]:
