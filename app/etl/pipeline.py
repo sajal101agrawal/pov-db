@@ -477,10 +477,17 @@ def _option_volume_for_expiry(
 
 
 def _discovered_symbols(fo_rows, cm_rows) -> list[dict[str, Any]]:
-    symbols: dict[str, str] = {}
+    symbols: dict[str, tuple[str, bool]] = {}
     for row in cm_rows:
-        symbols.setdefault(row.symbol, "individual_securities")
+        symbols.setdefault(row.symbol, ("individual_securities", False))
     for row in fo_rows:
         symbol_type = "index" if row.instrument_type == "OPTIDX" else "individual_securities"
-        symbols[row.symbol] = symbol_type
-    return [{"symbol": symbol, "symbol_type": symbol_type} for symbol, symbol_type in sorted(symbols.items())]
+        symbols[row.symbol] = (symbol_type, True)
+    return [
+        {
+            "symbol": symbol,
+            "symbol_type": symbol_type,
+            "is_active": is_active,
+        }
+        for symbol, (symbol_type, is_active) in sorted(symbols.items())
+    ]

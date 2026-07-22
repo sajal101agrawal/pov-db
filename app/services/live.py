@@ -1005,7 +1005,7 @@ async def _kite_quote_many(
 ) -> dict[str, Any]:
     clean = list(dict.fromkeys(key for key in instrument_keys if key))
     data: dict[str, Any] = {}
-    batch_size = max(1, min(int(settings.live_kite_quote_batch_size), 500))
+    batch_size = max(1, min(int(settings.live_kite_quote_batch_size), 250))
     delay = max(0.0, float(settings.live_kite_quote_batch_delay_seconds))
     for index in range(0, len(clean), batch_size):
         batch = clean[index : index + batch_size]

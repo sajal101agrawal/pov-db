@@ -4,7 +4,7 @@ import asyncio
 from datetime import date
 
 from app.core.config import Settings
-from app.etl.pipeline import Pipeline
+from app.etl.pipeline import Pipeline, _discovered_symbols
 from app.sources.models import EquityBar, EquityBhavcopyRow, OptionBhavcopyRow
 
 
@@ -51,6 +51,39 @@ class FakeBhavcopySource:
 class FakeRates:
     async def fetch_91d_rate(self, start: date, end: date) -> list[dict]:
         return []
+
+
+def test_discovered_symbols_only_activates_fo_universe() -> None:
+    trade_date = date(2026, 7, 21)
+    fo_rows = asyncio.run(FakeBhavcopySource().fetch_fo(trade_date))
+    cm_rows = asyncio.run(FakeBhavcopySource().fetch_cm(trade_date))
+    cm_rows.append(
+        EquityBhavcopyRow(
+            symbol="CASHONLY",
+            trade_date=trade_date,
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.5,
+            volume=1_000,
+            turnover=100_500.0,
+            delivery_volume=None,
+            source="unit",
+        )
+    )
+
+    assert _discovered_symbols(fo_rows, cm_rows) == [
+        {
+            "symbol": "CASHONLY",
+            "symbol_type": "individual_securities",
+            "is_active": False,
+        },
+        {
+            "symbol": "RELIANCE",
+            "symbol_type": "individual_securities",
+            "is_active": True,
+        },
+    ]
 
 
 class FailingCorporateActions:

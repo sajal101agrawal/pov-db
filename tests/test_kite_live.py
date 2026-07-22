@@ -38,6 +38,36 @@ def test_kite_market_quote_normalization() -> None:
     assert quotes["RELIANCE"]["volume"] == 123456
 
 
+def test_kite_quote_many_caps_full_quote_batches_at_250() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.batches: list[list[str]] = []
+
+        async def quote(self, instruments: list[str]) -> dict:
+            self.batches.append(instruments)
+            return {
+                "data": {
+                    instrument: {"last_price": index}
+                    for index, instrument in enumerate(instruments)
+                }
+            }
+
+    client = Client()
+    result = asyncio.run(
+        live_service._kite_quote_many(
+            Settings(
+                live_kite_quote_batch_size=500,
+                live_kite_quote_batch_delay_seconds=0,
+            ),
+            client,  # type: ignore[arg-type]
+            [f"NFO:TEST{index}" for index in range(501)],
+        )
+    )
+
+    assert [len(batch) for batch in client.batches] == [250, 250, 1]
+    assert len(result["data"]) == 501
+
+
 def test_kite_option_summary_calculates_call_put_iv_from_quote_prices() -> None:
     trade_date = date(2026, 6, 1)
     expiry = trade_date + timedelta(days=30)

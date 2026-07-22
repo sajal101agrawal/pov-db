@@ -153,14 +153,21 @@ class MarketRepository:
             await conn.executemany(
                 """
                 INSERT INTO symbol_universe (symbol, symbol_type, is_active, updated_at)
-                VALUES ($1, $2, TRUE, NOW())
+                VALUES ($1, $2, $3, NOW())
                 ON CONFLICT (symbol)
                 DO UPDATE SET
                     symbol_type = COALESCE(symbol_universe.symbol_type, EXCLUDED.symbol_type),
-                    is_active = TRUE,
+                    is_active = EXCLUDED.is_active,
                     updated_at = NOW()
                 """,
-                [(item["symbol"], item.get("symbol_type")) for item in items],
+                [
+                    (
+                        item["symbol"],
+                        item.get("symbol_type"),
+                        item.get("is_active", True),
+                    )
+                    for item in items
+                ],
             )
         return len(items)
 
@@ -1056,6 +1063,10 @@ class MarketRepository:
                         "is_atm",
                     ],
                 )
+                # Keep Timescale chunk pruning tied to this trade date. PostgreSQL can
+                # otherwise switch repeated updates to a generic prepared plan and
+                # attempt to decompress historical chunks that cannot match.
+                await conn.execute("SET LOCAL plan_cache_mode = force_custom_plan")
                 await conn.execute(
                     """
                     UPDATE options_historical AS target

@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     kite_request_token: str | None = None
     kite_auto_refresh_enabled: bool = True
     kite_token_refresh_time_ist: str = "06:05"
-    live_kite_quote_batch_size: int = 500
+    live_kite_quote_batch_size: int = 250
     live_kite_quote_batch_delay_seconds: float = 1.1
     live_quote_provider: str = "yahoo"
     live_option_summary_provider: str = "nse"
