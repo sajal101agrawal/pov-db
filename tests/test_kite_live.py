@@ -486,6 +486,10 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
         "expiry_90d": date(2026, 9, 24),
         "dte_90": 91,
         "iv_90": 0.30,
+        "nearest_ce_iv": 0.71,
+        "nearest_pe_iv": 0.69,
+        "nearest_ce_ltp": 380.55,
+        "nearest_pe_ltp": 400.40,
     }
     quote = {"symbol": "ABC", "provider": "kite", "current_price": 100.0}
     option_summary = {
@@ -494,6 +498,8 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
         "live_option_volume_source": "kite:quote",
         "live_option_volume_kind": "total_contracts_all_strikes",
         "live_atm_iv_source": "kite:quote:calculated-iv",
+        "live_atm_call_ltp": 12.5,
+        "live_atm_put_ltp": 10.5,
         "live_iv_terms": [
             {"expiry_date": date(2026, 7, 25), "call_iv": 0.20, "put_iv": 0.22},
             {"expiry_date": date(2026, 8, 24), "call_iv": 0.25, "put_iv": 0.27},
@@ -507,6 +513,14 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
     assert payload["dte_90"] is None
     assert payload["iv_90"] is None
     assert payload["eod_iv_90"] == 0.30
+    assert payload["nearest_ce_iv"] == 0.20
+    assert payload["nearest_pe_iv"] == 0.22
+    assert payload["nearest_ce_ltp"] == 12.5
+    assert payload["nearest_pe_ltp"] == 10.5
+    assert payload["eod_nearest_ce_iv"] == 0.71
+    assert payload["eod_nearest_pe_iv"] == 0.69
+    assert payload["eod_nearest_ce_ltp"] == 380.55
+    assert payload["eod_nearest_pe_ltp"] == 400.40
     assert payload["live_raw_call_iv_term_structure"] == [
         {"tenor": 30, "dte": 30, "expiry": "2026-07-25", "iv": 0.20},
         {"tenor": 60, "dte": 60, "expiry": "2026-08-24", "iv": 0.25},

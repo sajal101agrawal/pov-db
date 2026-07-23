@@ -136,12 +136,14 @@ def test_nse_v3_buy_sell_price_fields_are_normalized() -> None:
                     "CE": {
                         "totalTradedVolume": 10,
                         "impliedVolatility": 20,
+                        "lastPrice": 12.5,
                         "buyPrice1": 9.5,
                         "sellPrice1": 10.5,
                     },
                     "PE": {
                         "totalTradedVolume": 20,
                         "impliedVolatility": 30,
+                        "lastPrice": 10.5,
                         "buyPrice1": 8.5,
                         "sellPrice1": 9.5,
                     },
@@ -157,6 +159,8 @@ def test_nse_v3_buy_sell_price_fields_are_normalized() -> None:
     assert summary["live_atm_call_ask_price"] == 10.5
     assert summary["live_atm_put_bid_price"] == 8.5
     assert summary["live_atm_put_ask_price"] == 9.5
+    assert summary["live_atm_call_ltp"] == 12.5
+    assert summary["live_atm_put_ltp"] == 10.5
 
 
 def test_nse_expiry_summaries_preserve_bid_ask_in_live_iv_terms() -> None:
