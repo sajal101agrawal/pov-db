@@ -11,6 +11,20 @@ import httpx
 from app.utils.retry import retry_async
 
 
+INDEX_QUOTE_KEYS = {
+    "NIFTY": "NSE:NIFTY 50",
+    "BANKNIFTY": "NSE:NIFTY BANK",
+    "FINNIFTY": "NSE:NIFTY FIN SERVICE",
+    "MIDCPNIFTY": "NSE:NIFTY MID SELECT",
+    "NIFTYNXT50": "NSE:NIFTY NEXT 50",
+}
+
+
+def market_quote_key(symbol: str) -> str:
+    symbol = symbol.upper()
+    return INDEX_QUOTE_KEYS.get(symbol, f"NSE:{symbol}")
+
+
 class KiteConnectClient:
     base_url = "https://api.kite.trade"
     login_url = "https://kite.zerodha.com/connect/login?v=3&api_key={api_key}"

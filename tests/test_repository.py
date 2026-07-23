@@ -55,3 +55,20 @@ def test_contract_derived_update_forces_custom_plan_before_timescale_dml() -> No
     assert updated == 1
     assert statements[-2] == "SET LOCAL plan_cache_mode = force_custom_plan"
     assert statements[-1].startswith("UPDATE options_historical AS target")
+
+
+def test_latest_live_metrics_without_symbol_filter_only_returns_active_universe() -> None:
+    queries: list[str] = []
+
+    class Pool:
+        async def fetch(self, query: str, *args: object) -> list[dict]:
+            queries.append(" ".join(query.split()))
+            return []
+
+    result = asyncio.run(
+        MarketRepository(Pool()).latest_live_metrics()  # type: ignore[arg-type]
+    )
+
+    assert result == {}
+    assert "JOIN symbol_universe su ON su.symbol = lsm.symbol" in queries[0]
+    assert "WHERE su.is_active" in queries[0]

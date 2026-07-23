@@ -7,7 +7,7 @@ import math
 import app.services.live as live_service
 from app.core.config import Settings
 from app.services.calculations import black_scholes_price
-from app.sources.kite import normalize_market_quotes, session_checksum
+from app.sources.kite import market_quote_key, normalize_market_quotes, session_checksum
 
 
 def test_kite_session_checksum_is_sha256_of_key_token_secret() -> None:
@@ -36,6 +36,15 @@ def test_kite_market_quote_normalization() -> None:
     assert quotes["RELIANCE"]["provider_symbol"] == "NSE:RELIANCE"
     assert quotes["RELIANCE"]["current_price"] == 2900.5
     assert quotes["RELIANCE"]["volume"] == 123456
+
+
+def test_kite_market_quote_key_maps_derivative_indexes() -> None:
+    assert market_quote_key("NIFTY") == "NSE:NIFTY 50"
+    assert market_quote_key("BANKNIFTY") == "NSE:NIFTY BANK"
+    assert market_quote_key("FINNIFTY") == "NSE:NIFTY FIN SERVICE"
+    assert market_quote_key("MIDCPNIFTY") == "NSE:NIFTY MID SELECT"
+    assert market_quote_key("NIFTYNXT50") == "NSE:NIFTY NEXT 50"
+    assert market_quote_key("RELIANCE") == "NSE:RELIANCE"
 
 
 def test_kite_quote_many_caps_full_quote_batches_at_250() -> None:
@@ -151,6 +160,36 @@ def test_kite_option_summary_sums_quote_volume_across_all_expiry_strikes() -> No
     assert math.isclose(summary["live_atm_put_iv"], 0.20, rel_tol=1e-5)
 
 
+def test_kite_option_summary_preserves_zero_preopen_volume() -> None:
+    request = {
+        "symbol": "ABC",
+        "spot": 100.0,
+        "expiry": date(2026, 7, 28),
+        "strike": 100.0,
+        "strike_count": 1,
+        "ce_key": "NFO:ABC26JUL100CE",
+        "pe_key": "NFO:ABC26JUL100PE",
+        "volume_quote_keys": ["NFO:ABC26JUL100CE", "NFO:ABC26JUL100PE"],
+    }
+    quotes = {
+        "data": {
+            "NFO:ABC26JUL100CE": _quote(0.0, 0),
+            "NFO:ABC26JUL100PE": _quote(0.0, 0),
+        }
+    }
+
+    summary = live_service._kite_option_summary_from_quotes(
+        request,
+        quotes,
+        date(2026, 7, 23),
+        0.06,
+    )
+
+    assert summary is not None
+    assert summary["live_option_volume"] == 0
+    assert summary["live_atm_iv"] is None
+
+
 def test_kite_option_summary_preserves_quote_volume_without_lot_size_division() -> None:
     trade_date = date(2026, 6, 1)
     expiry = trade_date + timedelta(days=30)
@@ -242,7 +281,7 @@ def test_bid_ask_spread_pct_rejects_missing_zero_and_inverted_quotes() -> None:
     assert live_service._bid_ask_spread_pct("bad", 100) is None
 
 
-def test_kite_option_summary_ignores_stale_ltp_without_depth_or_volume() -> None:
+def test_kite_option_summary_reports_zero_volume_without_using_stale_ltp_for_iv() -> None:
     trade_date = date(2026, 6, 1)
     expiry = trade_date + timedelta(days=30)
     request = {
@@ -269,7 +308,9 @@ def test_kite_option_summary_ignores_stale_ltp_without_depth_or_volume() -> None
 
     summary = live_service._kite_option_summary_from_quotes(request, quotes, trade_date, 0.06)
 
-    assert summary is None
+    assert summary is not None
+    assert summary["live_option_volume"] == 0
+    assert summary["live_atm_iv"] is None
 
 
 def test_kite_expiry_targets_are_distinct_when_nearest_targets_overlap() -> None:

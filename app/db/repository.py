@@ -678,17 +678,20 @@ class MarketRepository:
 
     async def latest_live_metrics(self, symbols: list[str] | None = None) -> dict[str, dict[str, Any]]:
         params: list[Any] = []
-        where = ""
+        universe_join = "JOIN symbol_universe su ON su.symbol = lsm.symbol"
+        where = "WHERE su.is_active"
         if symbols is not None:
             clean_symbols = [symbol.upper() for symbol in symbols if symbol]
             if not clean_symbols:
                 return {}
-            where = "WHERE symbol = ANY($1::text[])"
+            universe_join = ""
+            where = "WHERE lsm.symbol = ANY($1::text[])"
             params.append(clean_symbols)
         rows = await self.pool.fetch(
             f"""
-            SELECT symbol, snapshot_time, payload::text AS payload_json
-            FROM live_symbol_metrics
+            SELECT lsm.symbol, lsm.snapshot_time, lsm.payload::text AS payload_json
+            FROM live_symbol_metrics lsm
+            {universe_join}
             {where}
             """,
             *params,

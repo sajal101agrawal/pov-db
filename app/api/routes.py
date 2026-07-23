@@ -1391,7 +1391,11 @@ async def _live_payloads_by_symbol(
 
     for item in _dedupe_live_payloads(redis_payloads):
         symbol = str(item.get("symbol") or "").upper()
-        if symbol:
+        current = live_by_symbol.get(symbol)
+        if symbol and (
+            current is None
+            or _live_snapshot_timestamp(item) >= _live_snapshot_timestamp(current)
+        ):
             live_by_symbol[symbol] = item
     return live_by_symbol
 
@@ -1400,12 +1404,19 @@ async def _latest_live_payload(
     symbol: str,
     cache_service: CacheService,
     repo: MarketRepository,
+    not_before: Any = None,
 ) -> dict[str, Any]:
     symbol = symbol.upper()
     live = await cache_service.get_live(symbol)
-    if live:
-        return live
-    return (await repo.latest_live_metrics([symbol])).get(symbol, {})
+    if not live:
+        live = (await repo.latest_live_metrics([symbol])).get(symbol, {})
+    live_date = _date_to_string(live.get("trade_date")) or _date_from_snapshot(
+        live.get("snapshot_time")
+    )
+    minimum_date = _date_to_string(not_before)
+    if live_date and minimum_date and live_date < minimum_date:
+        return {}
+    return live
 
 
 @router.get("/all-dashboard")
@@ -1780,7 +1791,12 @@ async def symbol_volatility_cone(
         }
         await cache_service.set_json(cache_key, result)
 
-    live = await _latest_live_payload(symbol, cache_service, repo)
+    live = await _latest_live_payload(
+        symbol,
+        cache_service,
+        repo,
+        result.get("as_of"),
+    )
     return _overlay_live_volatility_cone(result, live)
 
 
@@ -1919,7 +1935,12 @@ async def symbol_term_structure(
         }
         await cache_service.set_json(cache_key, result)
 
-    live = await _latest_live_payload(symbol, cache_service, repo)
+    live = await _latest_live_payload(
+        symbol,
+        cache_service,
+        repo,
+        (result.get("current") or {}).get("trade_date"),
+    )
     return _overlay_live_term_structure(result, live)
 
 
@@ -2458,7 +2479,12 @@ async def symbol_dashboard(
         if cached is None:
             raise HTTPException(status_code=404, detail="symbol not found")
         await cache_service.set_dashboard(symbol, cached)
-    live = await _latest_live_payload(symbol, cache_service, repo)
+    live = await _latest_live_payload(
+        symbol,
+        cache_service,
+        repo,
+        cached.get("trade_date"),
+    )
     payload = {**cached, **live}
     return await _refresh_live_payload_forward_percentiles(symbol, payload, repo)
 
@@ -2477,7 +2503,12 @@ async def symbol_history(
     else:
         result = await repo.history(symbol, days)
         await cache_service.set_json(cache_key, result)
-    live = await _latest_live_payload(symbol, cache_service, repo)
+    live = await _latest_live_payload(
+        symbol,
+        cache_service,
+        repo,
+        result[-1].get("trade_date") if result else None,
+    )
     return _overlay_live_history(result, live)
 
 

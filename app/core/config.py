@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     live_option_chain_min_interval_seconds: float = 3.0
     live_symbols: str = "all"
     live_poll_interval_seconds: int = 180
+    live_worker_batch_size: int = 20
     live_cache_ttl_seconds: int = 300
     live_market_start_ist: str = "09:00"
     live_market_end_ist: str = "16:00"

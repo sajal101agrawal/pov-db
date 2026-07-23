@@ -28,8 +28,10 @@ from app.sources.dhan import (
     token_expiry,
 )
 from app.sources.kite import (
+    INDEX_QUOTE_KEYS,
     KiteConnectClient,
     login_url as kite_login_url,
+    market_quote_key as kite_market_quote_key,
     normalize_market_quotes as normalize_kite_market_quotes,
     quote_last_price as kite_quote_last_price,
     quote_mid_or_ltp as kite_quote_mid_or_ltp,
@@ -382,7 +384,7 @@ async def _fetch_and_store_kite_live_quotes(
         raise RuntimeError("KITE_API_KEY is required for Kite live quotes")
     access_token = await _kite_access_token(settings, repo, redis)
     selected = await selected_live_symbols(settings, repo, symbols)
-    symbol_to_key = {symbol: f"NSE:{symbol}" for symbol in selected}
+    symbol_to_key = {symbol: kite_market_quote_key(symbol) for symbol in selected}
     client = KiteConnectClient(
         settings.kite_api_key,
         access_token,
@@ -392,6 +394,15 @@ async def _fetch_and_store_kite_live_quotes(
     )
     raw = await _kite_quote_many(settings, client, list(symbol_to_key.values()))
     quotes = normalize_kite_market_quotes(raw, symbol_to_key)
+    missing_kite_quotes = [symbol for symbol in selected if symbol not in quotes]
+    if missing_kite_quotes:
+        yahoo_symbols = await repo.yahoo_symbols_for(missing_kite_quotes)
+        yahoo_quotes = await YahooFinanceClient(
+            settings.source_retry_attempts,
+            settings.source_retry_base_delay_seconds,
+            settings.source_retry_max_delay_seconds,
+        ).fetch_live_quotes(missing_kite_quotes, yahoo_symbols)
+        quotes.update(yahoo_quotes)
     baseline = await repo.live_baseline(selected)
     option_summaries = await _fetch_live_option_summaries(settings, repo, redis, selected, baseline)
     cache = CacheService(redis)
@@ -705,7 +716,7 @@ async def _fetch_kite_live_option_summaries(
     instruments = await _kite_instruments(client)
     now = datetime.now(IST).date()
     rate = await repo.risk_free_rate(now, settings.default_risk_free_rate)
-    underlying_keys = {symbol: f"NSE:{symbol}" for symbol in selected}
+    underlying_keys = {symbol: kite_market_quote_key(symbol) for symbol in selected}
     underlying_quotes = await _kite_quote_many(settings, client, list(underlying_keys.values()))
 
     requests: list[dict[str, Any]] = []
@@ -742,12 +753,43 @@ async def _fetch_kite_live_option_summaries(
     return output
 
 
+def _worker_symbol_order(symbols: list[str]) -> list[str]:
+    return sorted(
+        {symbol.upper() for symbol in symbols},
+        key=lambda symbol: (symbol not in INDEX_QUOTE_KEYS, symbol),
+    )
+
+
+async def run_live_worker_cycle(
+    settings: Settings,
+    repo: MarketRepository,
+    redis: Redis,
+) -> dict[str, Any]:
+    selected = _worker_symbol_order(await selected_live_symbols(settings, repo))
+    batch_size = max(1, int(settings.live_worker_batch_size))
+    results = []
+    for index in range(0, len(selected), batch_size):
+        batch = selected[index : index + batch_size]
+        results.append(await fetch_and_store_live_quotes(settings, repo, redis, batch))
+        if index + batch_size < len(selected):
+            await asyncio.sleep(max(0.0, settings.live_kite_quote_batch_delay_seconds))
+
+    latest = list((await repo.latest_live_metrics(selected)).values())
+    latest.sort(key=lambda item: str(item.get("symbol") or ""))
+    await CacheService(redis).set_live_symbols(latest, ttl=_live_cache_ttl(settings))
+    return {
+        "symbols_requested": len(selected),
+        "batches": len(results),
+        "quotes_stored": sum(int(item.get("quotes_stored") or 0) for item in results),
+    }
+
+
 async def live_worker_loop(settings: Settings, repo: MarketRepository, redis: Redis) -> None:
     while True:
         try:
             await _maybe_refresh_kite_access_token(settings, repo, redis)
             if await _should_poll_live(settings, repo):
-                await fetch_and_store_live_quotes(settings, repo, redis)
+                await run_live_worker_cycle(settings, repo, redis)
         except Exception as exc:  # noqa: BLE001 - worker must keep running
             await repo.log_error(
                 "live_snapshot_worker",
@@ -1161,7 +1203,7 @@ def _kite_total_quote_volume(
     volume_count = 0
     for key in dict.fromkeys(quote_keys):
         volume = _kite_quote_volume(data.get(key))
-        if volume is None or volume <= 0:
+        if volume is None:
             continue
         total += volume
         volume_count += 1
