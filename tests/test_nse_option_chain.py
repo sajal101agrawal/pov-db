@@ -126,6 +126,39 @@ def test_normalize_option_chain_payload_matches_live_chain_shape() -> None:
     assert chain["strikes"][0]["pe"]["volume"] == 20
 
 
+def test_nse_v3_buy_sell_price_fields_are_normalized() -> None:
+    payload = {
+        "records": {
+            "underlyingValue": 100,
+            "data": [
+                {
+                    "strikePrice": 100,
+                    "CE": {
+                        "totalTradedVolume": 10,
+                        "impliedVolatility": 20,
+                        "buyPrice1": 9.5,
+                        "sellPrice1": 10.5,
+                    },
+                    "PE": {
+                        "totalTradedVolume": 20,
+                        "impliedVolatility": 30,
+                        "buyPrice1": 8.5,
+                        "sellPrice1": 9.5,
+                    },
+                }
+            ],
+        }
+    }
+
+    summary = normalize_option_chain_summary("ABC", payload, "28-Jul-2026")
+
+    assert summary is not None
+    assert summary["live_atm_call_bid_price"] == 9.5
+    assert summary["live_atm_call_ask_price"] == 10.5
+    assert summary["live_atm_put_bid_price"] == 8.5
+    assert summary["live_atm_put_ask_price"] == 9.5
+
+
 def test_nse_expiry_summaries_preserve_bid_ask_in_live_iv_terms() -> None:
     first = {
         "symbol": "RELIANCE",

@@ -107,7 +107,7 @@ def test_kite_option_summary_calculates_call_put_iv_from_quote_prices() -> None:
     assert summary is not None
     assert summary["provider"] == "kite"
     assert summary["live_option_volume"] == 30
-    assert summary["live_option_volume_kind"] == "total_quote_volume_all_strikes"
+    assert summary["live_option_volume_kind"] == "total_contracts_all_strikes"
     assert summary["live_atm_strike"] == 100.0
     assert math.isclose(summary["live_atm_call_iv"], 0.25, rel_tol=1e-5)
     assert math.isclose(summary["live_atm_put_iv"], 0.20, rel_tol=1e-5)
@@ -190,7 +190,7 @@ def test_kite_option_summary_preserves_zero_preopen_volume() -> None:
     assert summary["live_atm_iv"] is None
 
 
-def test_kite_option_summary_preserves_quote_volume_without_lot_size_division() -> None:
+def test_kite_option_summary_normalizes_quote_volume_and_oi_by_lot_size() -> None:
     trade_date = date(2026, 6, 1)
     expiry = trade_date + timedelta(days=30)
     spot = 100.0
@@ -220,10 +220,12 @@ def test_kite_option_summary_preserves_quote_volume_without_lot_size_division() 
     summary = live_service._kite_option_summary_from_quotes(request, quotes, trade_date, rate)
 
     assert summary is not None
-    assert summary["live_atm_call_volume"] == 1500
-    assert summary["live_atm_put_volume"] == 3000
-    assert summary["live_atm_option_volume"] == 4500
-    assert summary["live_option_volume"] == 4500
+    assert summary["live_atm_call_volume"] == 5
+    assert summary["live_atm_put_volume"] == 10
+    assert summary["live_atm_option_volume"] == 15
+    assert summary["live_option_volume"] == 15
+    assert summary["live_atm_call_oi"] == 50
+    assert summary["live_atm_put_oi"] == 100
 
 
 def test_kite_option_summary_prefers_bid_ask_mid_over_ltp_for_iv() -> None:
@@ -404,6 +406,12 @@ def test_kite_option_request_uses_preferred_same_strike_for_far_expiry() -> None
         "NFO:ABC105CE",
         "NFO:ABC105PE",
     ]
+    assert request["quote_lot_sizes"] == {
+        "NFO:ABC100CE": 50,
+        "NFO:ABC100PE": 50,
+        "NFO:ABC105CE": 50,
+        "NFO:ABC105PE": 50,
+    }
 
 
 def test_kite_option_summary_requests_all_strikes_for_near_and_far_terms_only() -> None:
@@ -484,7 +492,7 @@ def test_live_quote_payload_clears_absent_far_tenor_fields() -> None:
         "provider": "kite",
         "live_option_volume": 30,
         "live_option_volume_source": "kite:quote",
-        "live_option_volume_kind": "total_quote_volume_all_strikes",
+        "live_option_volume_kind": "total_contracts_all_strikes",
         "live_atm_iv_source": "kite:quote:calculated-iv",
         "live_iv_terms": [
             {"expiry_date": date(2026, 7, 25), "call_iv": 0.20, "put_iv": 0.22},
@@ -819,4 +827,5 @@ def _instrument(expiry: date, strike: float, option_type: str) -> dict:
         "expiry": expiry,
         "strike": strike,
         "tradingsymbol": f"ABC{int(strike)}{option_type}",
+        "lot_size": 50,
     }

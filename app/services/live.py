@@ -1142,6 +1142,12 @@ def _kite_atm_option_request(
             for key in (_kite_instrument_key(row) for row in expiry_rows)
             if key
         ],
+        "quote_lot_sizes": {
+            key: lot_size
+            for row in expiry_rows
+            if (key := _kite_instrument_key(row))
+            and (lot_size := _kite_lot_size(row)) is not None
+        },
     }
 
 
@@ -1186,23 +1192,39 @@ def _kite_instrument_key(row: dict[str, Any] | None) -> str | None:
     return f"NFO:{tradingsymbol}" if tradingsymbol else None
 
 
-def _kite_quote_volume(quote: dict[str, Any] | None) -> int | None:
+def _kite_lot_size(row: dict[str, Any] | None) -> int | None:
+    if not row:
+        return None
+    lot_size = _coerce_int(row.get("lot_size"))
+    return lot_size if lot_size is not None and lot_size > 0 else None
+
+
+def _kite_contract_count(value: Any, lot_size: int | None) -> int | None:
+    quantity = _coerce_int(value)
+    if quantity is None:
+        return None
+    return quantity // lot_size if lot_size else quantity
+
+
+def _kite_quote_contract_volume(
+    quote: dict[str, Any] | None,
+    lot_size: int | None,
+) -> int | None:
     if not quote:
         return None
-    volume = _coerce_int(quote.get("volume"))
-    if volume is None:
-        return None
-    return volume
+    return _kite_contract_count(quote.get("volume"), lot_size)
 
 
 def _kite_total_quote_volume(
     data: dict[str, Any],
     quote_keys: list[str],
+    quote_lot_sizes: dict[str, int] | None = None,
 ) -> int | None:
     total = 0
     volume_count = 0
+    lot_sizes = quote_lot_sizes or {}
     for key in dict.fromkeys(quote_keys):
-        volume = _kite_quote_volume(data.get(key))
+        volume = _kite_quote_contract_volume(data.get(key), lot_sizes.get(key))
         if volume is None:
             continue
         total += volume
@@ -1232,8 +1254,19 @@ def _kite_option_summary_from_quotes(
     call_spread = _bid_ask_spread_pct(call_bid, call_ask)
     put_spread = _bid_ask_spread_pct(put_bid, put_ask)
     spread_values = [value for value in (call_spread, put_spread) if value is not None]
-    call_volume = _kite_quote_volume(ce_quote)
-    put_volume = _kite_quote_volume(pe_quote)
+    quote_lot_sizes = dict(request.get("quote_lot_sizes") or {})
+    if request.get("ce_key"):
+        quote_lot_sizes.setdefault(request["ce_key"], _kite_lot_size(request.get("ce_row")))
+    if request.get("pe_key"):
+        quote_lot_sizes.setdefault(request["pe_key"], _kite_lot_size(request.get("pe_row")))
+    call_volume = _kite_quote_contract_volume(
+        ce_quote,
+        quote_lot_sizes.get(request.get("ce_key")),
+    )
+    put_volume = _kite_quote_contract_volume(
+        pe_quote,
+        quote_lot_sizes.get(request.get("pe_key")),
+    )
     volumes = [volume for volume in (call_volume, put_volume) if volume is not None and volume > 0]
     atm_volume = sum(volumes) if volumes else None
     volume_quote_keys = request.get("volume_quote_keys")
@@ -1242,6 +1275,7 @@ def _kite_option_summary_from_quotes(
         volume_quote_keys
         if volume_quote_keys is not None
         else request.get("quote_keys") or [request.get("ce_key"), request.get("pe_key")],
+        quote_lot_sizes,
     )
     if atm_iv is None and total_volume is None:
         return None
@@ -1250,7 +1284,7 @@ def _kite_option_summary_from_quotes(
         "provider": "kite",
         "live_option_volume": total_volume,
         "live_option_volume_source": "kite:quote",
-        "live_option_volume_kind": "total_quote_volume_all_strikes",
+        "live_option_volume_kind": "total_contracts_all_strikes",
         "live_option_expiry": expiry.isoformat(),
         "live_option_expiry_date": expiry,
         "live_option_strike_count": request["strike_count"],
@@ -1275,8 +1309,16 @@ def _kite_option_summary_from_quotes(
         "live_atm_call_volume": call_volume,
         "live_atm_put_volume": put_volume,
         "live_atm_option_volume": atm_volume,
-        "live_atm_call_oi": _coerce_int(ce_quote.get("oi")) if ce_quote else None,
-        "live_atm_put_oi": _coerce_int(pe_quote.get("oi")) if pe_quote else None,
+        "live_atm_call_oi": (
+            _kite_contract_count(ce_quote.get("oi"), quote_lot_sizes.get(request.get("ce_key")))
+            if ce_quote
+            else None
+        ),
+        "live_atm_put_oi": (
+            _kite_contract_count(pe_quote.get("oi"), quote_lot_sizes.get(request.get("pe_key")))
+            if pe_quote
+            else None
+        ),
     }
 
 
@@ -1396,8 +1438,8 @@ def _kite_chain_leg(
         "last_price": _coerce_float(quote.get("last_price")),
         "top_bid_price": _coerce_float((buy[0] or {}).get("price")) if buy else None,
         "top_ask_price": _coerce_float((sell[0] or {}).get("price")) if sell else None,
-        "volume": _coerce_int(quote.get("volume")),
-        "oi": _coerce_int(quote.get("oi")),
+        "volume": _kite_contract_count(quote.get("volume"), _kite_lot_size(row)),
+        "oi": _kite_contract_count(quote.get("oi"), _kite_lot_size(row)),
         "previous_oi": None,
         "implied_volatility": _kite_leg_iv(
             quote,

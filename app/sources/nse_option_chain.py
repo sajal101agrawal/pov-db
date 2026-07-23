@@ -252,10 +252,10 @@ def normalize_option_chain_summary(
                 "strike": strike,
                 "ce_iv": _iv_decimal(ce.get("impliedVolatility")),
                 "pe_iv": _iv_decimal(pe.get("impliedVolatility")),
-                "ce_bid": _first_numeric(ce, ["bidprice", "bidPrice"]),
-                "ce_ask": _first_numeric(ce, ["askPrice", "askprice"]),
-                "pe_bid": _first_numeric(pe, ["bidprice", "bidPrice"]),
-                "pe_ask": _first_numeric(pe, ["askPrice", "askprice"]),
+                "ce_bid": _first_numeric(ce, ["buyPrice1", "bidprice", "bidPrice"]),
+                "ce_ask": _first_numeric(ce, ["sellPrice1", "askPrice", "askprice"]),
+                "pe_bid": _first_numeric(pe, ["buyPrice1", "bidprice", "bidPrice"]),
+                "pe_ask": _first_numeric(pe, ["sellPrice1", "askPrice", "askprice"]),
             }
         )
 
@@ -382,8 +382,8 @@ def _normalize_nse_leg(leg: dict[str, Any]) -> dict[str, Any]:
     return {
         "security_id": leg.get("identifier"),
         "last_price": _float(leg.get("lastPrice")),
-        "top_bid_price": _first_numeric(leg, ["bidprice", "bidPrice"]),
-        "top_ask_price": _first_numeric(leg, ["askPrice", "askprice"]),
+        "top_bid_price": _first_numeric(leg, ["buyPrice1", "bidprice", "bidPrice"]),
+        "top_ask_price": _first_numeric(leg, ["sellPrice1", "askPrice", "askprice"]),
         "volume": _int(leg.get("totalTradedVolume")),
         "oi": _int(leg.get("openInterest")),
         "previous_oi": None,
